@@ -2,14 +2,16 @@
 //! page objects contained within a single `PdfPageAnnotation`.
 
 use crate::bindgen::{FPDF_ANNOTATION, FPDF_DOCUMENT, FPDF_PAGE};
-use crate::bindings::PdfiumLibraryBindings;
 use crate::error::{PdfiumError, PdfiumInternalError};
+use crate::pdf::document::page::object::ownership::PdfPageObjectOwnership;
 use crate::pdf::document::page::object::private::internal::PdfPageObjectPrivate;
 use crate::pdf::document::page::object::PdfPageObject;
 use crate::pdf::document::page::objects::common::{
     PdfPageObjectIndex, PdfPageObjectsCommon, PdfPageObjectsIterator,
 };
 use crate::pdf::document::page::objects::private::internal::PdfPageObjectsPrivate;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
+use std::marker::PhantomData;
 use std::os::raw::c_int;
 
 /// The page objects contained within a single `PdfPageAnnotation`.
@@ -27,11 +29,9 @@ use std::os::raw::c_int;
 /// of types `PdfPageAnnotationType::Ink` and `PdfPageAnnotationType::Stamp`. All other annotation
 /// types are read-only.
 pub struct PdfPageAnnotationObjects<'a> {
-    document_handle: FPDF_DOCUMENT,
-    page_handle: FPDF_PAGE,
     annotation_handle: FPDF_ANNOTATION,
-    bindings: &'a dyn PdfiumLibraryBindings,
-    do_regenerate_page_content_after_each_change: bool,
+    ownership: PdfPageObjectOwnership,
+    lifetime: PhantomData<&'a FPDF_ANNOTATION>,
 }
 
 impl<'a> PdfPageAnnotationObjects<'a> {
@@ -40,72 +40,59 @@ impl<'a> PdfPageAnnotationObjects<'a> {
         document_handle: FPDF_DOCUMENT,
         page_handle: FPDF_PAGE,
         annotation_handle: FPDF_ANNOTATION,
-        bindings: &'a dyn PdfiumLibraryBindings,
     ) -> Self {
         Self {
-            document_handle,
-            page_handle,
             annotation_handle,
-            bindings,
-            do_regenerate_page_content_after_each_change: false,
+            ownership: PdfPageObjectOwnership::owned_by_attached_annotation(
+                document_handle,
+                page_handle,
+                annotation_handle,
+            ),
+            lifetime: PhantomData,
         }
     }
 
     /// Returns the internal `FPDF_ANNOTATION` handle for the [PdfPageAnnotation] containing
     /// this [PdfPageAnnotationObjects] collection.
     #[inline]
-    pub(crate) fn get_annotation_handle(&self) -> &FPDF_ANNOTATION {
-        &self.annotation_handle
-    }
-
-    /// Sets whether or not this [PdfPageAnnotationObjects] collection should trigger
-    /// content regeneration on its containing [PdfPage] when the collection is mutated.
-    #[inline]
-    pub(crate) fn do_regenerate_page_content_after_each_change(
-        &mut self,
-        do_regenerate_page_content_after_each_change: bool,
-    ) {
-        self.do_regenerate_page_content_after_each_change =
-            do_regenerate_page_content_after_each_change;
+    pub(crate) fn annotation_handle(&self) -> FPDF_ANNOTATION {
+        self.annotation_handle
     }
 }
 
 impl<'a> PdfPageObjectsPrivate<'a> for PdfPageAnnotationObjects<'a> {
     #[inline]
-    fn document_handle(&self) -> FPDF_DOCUMENT {
-        self.document_handle
-    }
-
-    #[inline]
-    fn bindings(&self) -> &'a dyn PdfiumLibraryBindings {
-        self.bindings
+    fn ownership(&self) -> &PdfPageObjectOwnership {
+        &self.ownership
     }
 
     #[inline]
     fn len_impl(&self) -> PdfPageObjectIndex {
-        self.bindings
-            .FPDFAnnot_GetObjectCount(self.annotation_handle) as PdfPageObjectIndex
+        (unsafe {
+            self.bindings()
+                .FPDFAnnot_GetObjectCount(self.annotation_handle())
+        }) as PdfPageObjectIndex
     }
 
     fn get_impl(&self, index: PdfPageObjectIndex) -> Result<PdfPageObject<'a>, PdfiumError> {
-        if index >= self.len() {
-            return Err(PdfiumError::PageObjectIndexOutOfBounds);
-        }
-
-        let object_handle = self
-            .bindings
-            .FPDFAnnot_GetObject(self.annotation_handle, index as c_int);
+        let object_handle = unsafe {
+            self.bindings()
+                .FPDFAnnot_GetObject(self.annotation_handle(), index as c_int)
+        };
 
         if object_handle.is_null() {
-            Err(PdfiumError::PdfiumLibraryInternalError(
-                PdfiumInternalError::Unknown,
-            ))
+            if index >= self.len() {
+                Err(PdfiumError::PageObjectIndexOutOfBounds)
+            } else {
+                Err(PdfiumError::PdfiumLibraryInternalError(
+                    PdfiumInternalError::Unknown,
+                ))
+            }
         } else {
             Ok(PdfPageObject::from_pdfium(
                 object_handle,
-                None,
-                Some(self.annotation_handle),
-                self.bindings,
+                *self.ownership(),
+                self.bindings(),
             ))
         }
     }
@@ -115,47 +102,27 @@ impl<'a> PdfPageObjectsPrivate<'a> for PdfPageAnnotationObjects<'a> {
         PdfPageObjectsIterator::new(self)
     }
 
+    #[inline]
     fn add_object_impl(
         &mut self,
         mut object: PdfPageObject<'a>,
     ) -> Result<PdfPageObject<'a>, PdfiumError> {
-        object.add_object_to_annotation(self).and_then(|_| {
-            if self.do_regenerate_page_content_after_each_change {
-                if self
-                    .bindings
-                    .is_true(self.bindings.FPDFPage_GenerateContent(self.page_handle))
-                {
-                    Ok(object)
-                } else {
-                    Err(PdfiumError::PdfiumLibraryInternalError(
-                        PdfiumInternalError::Unknown,
-                    ))
-                }
-            } else {
-                Ok(object)
-            }
-        })
+        object.add_object_to_annotation(self).map(|_| object)
     }
 
+    #[inline]
     fn remove_object_impl(
         &mut self,
         mut object: PdfPageObject<'a>,
     ) -> Result<PdfPageObject<'a>, PdfiumError> {
-        object.remove_object_from_annotation().and_then(|_| {
-            if self.do_regenerate_page_content_after_each_change {
-                if self
-                    .bindings
-                    .is_true(self.bindings.FPDFPage_GenerateContent(self.page_handle))
-                {
-                    Ok(object)
-                } else {
-                    Err(PdfiumError::PdfiumLibraryInternalError(
-                        PdfiumInternalError::Unknown,
-                    ))
-                }
-            } else {
-                Ok(object)
-            }
-        })
+        object.remove_object_from_annotation().map(|_| object)
     }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfPageAnnotationObjects<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfPageAnnotationObjects<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfPageAnnotationObjects<'a> {}

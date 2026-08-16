@@ -1,7 +1,18 @@
-/// A specific Pdfium FPDF_* API release version.
+//! Defines the [PdfiumApiVersion] enum, the set of Pdfium API versions supported by `pdfium-render`.
+
+/// A specific Pdfium `FPDF_*` API release version.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum PdfiumApiVersion {
     Future, // For changes published to Pdfium's repository but yet to be released in a binary
+    V7881,
+    V7763,
+    V7543,
+    V7350,
+    V7215,
+    V7123,
+    V6996,
+    V6721,
+    V6666,
     V6611,
     V6569,
     V6555,
@@ -24,6 +35,33 @@ impl PdfiumApiVersion {
     pub(crate) fn current() -> Self {
         #[cfg(feature = "pdfium_future")]
         return PdfiumApiVersion::Future;
+
+        #[cfg(feature = "pdfium_7881")]
+        return PdfiumApiVersion::V7881;
+
+        #[cfg(feature = "pdfium_7763")]
+        return PdfiumApiVersion::V7763;
+
+        #[cfg(feature = "pdfium_7543")]
+        return PdfiumApiVersion::V7543;
+
+        #[cfg(feature = "pdfium_7350")]
+        return PdfiumApiVersion::V7350;
+
+        #[cfg(feature = "pdfium_7215")]
+        return PdfiumApiVersion::V7215;
+
+        #[cfg(feature = "pdfium_7123")]
+        return PdfiumApiVersion::V7123;
+
+        #[cfg(feature = "pdfium_6996")]
+        return PdfiumApiVersion::V6996;
+
+        #[cfg(feature = "pdfium_6721")]
+        return PdfiumApiVersion::V6721;
+
+        #[cfg(feature = "pdfium_6666")]
+        return PdfiumApiVersion::V6666;
 
         #[cfg(feature = "pdfium_6611")]
         return PdfiumApiVersion::V6611;

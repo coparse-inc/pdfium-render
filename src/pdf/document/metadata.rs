@@ -1,13 +1,17 @@
-//! Defines the [PdfMetadata] struct, a collection of all the metadata tags in a `PdfDocument`.
+//! Defines the [PdfMetadata] struct, a collection of all the metadata tags in a [PdfDocument].
 
 use crate::bindgen::FPDF_DOCUMENT;
-use crate::bindings::PdfiumLibraryBindings;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use crate::utils::mem::create_byte_buffer;
 use crate::utils::utf16le::get_string_from_pdfium_utf16le_bytes;
+use std::marker::PhantomData;
 use std::os::raw::c_void;
 use std::slice::Iter;
 
-/// Valid metadata tag types in a `PdfDocument`.
+#[cfg(doc)]
+use crate::pdf::document::PdfDocument;
+
+/// Valid metadata tag types in a [PdfDocument].
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum PdfDocumentMetadataTagType {
     Title,
@@ -20,7 +24,7 @@ pub enum PdfDocumentMetadataTagType {
     ModificationDate,
 }
 
-/// A single metadata tag in a `PdfDocument`.
+/// A single metadata tag in a [PdfDocument].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PdfDocumentMetadataTag {
     tag: PdfDocumentMetadataTagType,
@@ -46,21 +50,19 @@ impl PdfDocumentMetadataTag {
     }
 }
 
+/// A collection of all the metadata tags in a [PdfDocument].
 pub struct PdfMetadata<'a> {
     document_handle: FPDF_DOCUMENT,
-    bindings: &'a dyn PdfiumLibraryBindings,
     tags: Vec<PdfDocumentMetadataTag>,
+    lifetime: PhantomData<&'a FPDF_DOCUMENT>,
 }
 
 impl<'a> PdfMetadata<'a> {
-    pub(crate) fn from_pdfium(
-        document_handle: FPDF_DOCUMENT,
-        bindings: &'a dyn PdfiumLibraryBindings,
-    ) -> Self {
+    pub(crate) fn from_pdfium(document_handle: FPDF_DOCUMENT) -> Self {
         let mut result = PdfMetadata {
             document_handle,
-            bindings,
             tags: vec![],
+            lifetime: PhantomData,
         };
 
         if let Some(tag) = result.get(PdfDocumentMetadataTagType::Title) {
@@ -96,12 +98,6 @@ impl<'a> PdfMetadata<'a> {
         }
 
         result
-    }
-
-    /// Returns the [PdfiumLibraryBindings] used by this [PdfMetadata] collection.
-    #[inline]
-    pub fn bindings(&self) -> &'a dyn PdfiumLibraryBindings {
-        self.bindings
     }
 
     /// Returns the number of metadata tags in this [PdfMetadata] collection.
@@ -144,9 +140,10 @@ impl<'a> PdfMetadata<'a> {
         // length and call FPDF_GetMetaText() again with a pointer to the buffer;
         // this will write the metadata text to the buffer in UTF16-LE format.
 
-        let buffer_length =
-            self.bindings
-                .FPDF_GetMetaText(self.document_handle, tag, std::ptr::null_mut(), 0);
+        let buffer_length = unsafe {
+            self.bindings()
+                .FPDF_GetMetaText(self.document_handle, tag, std::ptr::null_mut(), 0)
+        };
 
         if buffer_length == 0 {
             // The tag is not present.
@@ -156,12 +153,14 @@ impl<'a> PdfMetadata<'a> {
 
         let mut buffer = create_byte_buffer(buffer_length as usize);
 
-        let result = self.bindings.FPDF_GetMetaText(
-            self.document_handle,
-            tag,
-            buffer.as_mut_ptr() as *mut c_void,
-            buffer_length,
-        );
+        let result = unsafe {
+            self.bindings().FPDF_GetMetaText(
+                self.document_handle,
+                tag,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer_length,
+            )
+        };
 
         assert_eq!(result, buffer_length);
 
@@ -174,3 +173,11 @@ impl<'a> PdfMetadata<'a> {
         self.tags.iter()
     }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfMetadata<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfMetadata<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfMetadata<'a> {}

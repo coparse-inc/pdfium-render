@@ -15,12 +15,11 @@ pub fn main() -> Result<(), PdfiumError> {
 
             println!("{}", page.text().unwrap().all());
 
-            // PdfPageText::all() returns all text across all page objects of type
-            // PdfPageObjectType::Text on the page - this is convenience function,
-            // since it is often useful to extract all the page text in one operation.
-            // We could achieve exactly the same result by iterating over all the page
-            // text objects manually and concatenating the text strings extracted from
-            // each object together, like so:
+            // PdfPageText::all() returns all text across all page objects on the page.
+            // This is convenience function, since it is often useful to extract all
+            // the page text in one operation. But We could achieve the same result by
+            // iterating over all the page objects manually and concatenating the text
+            // extracted from each object together. A naive approach might be:
 
             // println!(
             //     "{}",
@@ -32,6 +31,25 @@ pub fn main() -> Result<(), PdfiumError> {
             //         .collect::<Vec<_>>()
             //         .join("")
             // );
+
+            // For most documents, this approach will return the same result as
+            // PdfPageText::all(). There is an edge case, however: page objects
+            // of type PdfPageXObjectFormObject are containers which can themselves
+            // contain child text objects. To correctly handle this edge case,
+            // a visitor pattern approach is necessary:
+
+            // visit_all_text_objects(page.objects().iter());
+
+            // fn visit_all_text_objects(iterator: PdfPageObjectsIterator) {
+            //     for object in iterator {
+            //         if let Some(text_object) = object.as_text_object() {
+            //             // Do something with this text object
+            //         } else if let Some(container) = object.as_x_object_form_object() {
+            //             // Visit child objects in this container
+            //             visit_all_text_objects(container.iter());
+            //         }
+            //     }
+            // }
         });
 
     Ok(())

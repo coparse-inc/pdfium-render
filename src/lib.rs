@@ -11,6 +11,33 @@ mod bindgen {
     #[cfg(feature = "pdfium_future")]
     include!("bindgen/pdfium_future.rs");
 
+    #[cfg(feature = "pdfium_7881")]
+    include!("bindgen/pdfium_7881.rs");
+
+    #[cfg(feature = "pdfium_7763")]
+    include!("bindgen/pdfium_7763.rs");
+
+    #[cfg(feature = "pdfium_7543")]
+    include!("bindgen/pdfium_7543.rs");
+
+    #[cfg(feature = "pdfium_7350")]
+    include!("bindgen/pdfium_7350.rs");
+
+    #[cfg(feature = "pdfium_7215")]
+    include!("bindgen/pdfium_7215.rs");
+
+    #[cfg(feature = "pdfium_7123")]
+    include!("bindgen/pdfium_7123.rs");
+
+    #[cfg(feature = "pdfium_6996")]
+    include!("bindgen/pdfium_6996.rs");
+
+    #[cfg(feature = "pdfium_6721")]
+    include!("bindgen/pdfium_6721.rs");
+
+    #[cfg(feature = "pdfium_6666")]
+    include!("bindgen/pdfium_6666.rs");
+
     #[cfg(feature = "pdfium_6611")]
     include!("bindgen/pdfium_6611.rs");
 
@@ -56,12 +83,12 @@ mod bindgen {
     #[cfg(feature = "pdfium_5961")]
     include!("bindgen/pdfium_5961.rs");
 
-    pub type size_t = usize;
+    pub(crate) type size_t = usize;
 }
 
 mod bindings;
+mod config;
 mod error;
-mod page_index_cache;
 mod pdf;
 mod pdfium;
 mod utils;
@@ -73,11 +100,9 @@ mod utils;
 /// use pdfium_render::prelude::*;
 /// ```
 pub mod prelude {
-    #[allow(deprecated)]
-    // TODO: AJRC - 5-Aug-24 - deprecated items will be removed in release 0.9.0. Tracking issue:
-    // https://github.com/ajrcarey/pdfium-render/issues/36
     pub use crate::{
         bindings::*,
+        config::*,
         error::*,
         pdf::action::*,
         pdf::appearance_mode::*,
@@ -89,6 +114,7 @@ pub mod prelude {
         pdf::document::attachments::*,
         pdf::document::bookmark::*,
         pdf::document::bookmarks::*,
+        pdf::document::catalog::*,
         pdf::document::fonts::*,
         pdf::document::form::*,
         pdf::document::metadata::*,
@@ -108,6 +134,7 @@ pub mod prelude {
         pdf::document::page::annotation::text::*,
         pdf::document::page::annotation::underline::*,
         pdf::document::page::annotation::unsupported::*,
+        pdf::document::page::annotation::variable_text::*,
         pdf::document::page::annotation::widget::*,
         pdf::document::page::annotation::xfa_widget::*,
         pdf::document::page::annotation::{
@@ -127,6 +154,7 @@ pub mod prelude {
         pdf::document::page::field::unknown::*,
         pdf::document::page::field::{PdfFormField, PdfFormFieldCommon, PdfFormFieldType},
         pdf::document::page::links::*,
+        pdf::document::page::object::content_mark::*,
         pdf::document::page::object::group::*,
         pdf::document::page::object::image::*,
         pdf::document::page::object::path::*,
@@ -142,6 +170,7 @@ pub mod prelude {
         pdf::document::page::objects::*,
         pdf::document::page::render_config::*,
         pdf::document::page::size::*,
+        pdf::document::page::structure_tree::*,
         pdf::document::page::text::char::*,
         pdf::document::page::text::chars::*,
         pdf::document::page::text::search::*,
@@ -149,8 +178,7 @@ pub mod prelude {
         pdf::document::page::text::segments::*,
         pdf::document::page::text::*,
         pdf::document::page::{
-            PdfBitmapRotation, PdfPage, PdfPageContentRegenerationStrategy, PdfPageOrientation,
-            PdfPageRenderRotation,
+            PdfPage, PdfPageContentRegenerationStrategy, PdfPageOrientation, PdfPageRenderRotation,
         },
         pdf::document::pages::*,
         pdf::document::permissions::*,
@@ -159,9 +187,11 @@ pub mod prelude {
         pdf::document::{PdfDocument, PdfDocumentVersion},
         pdf::font::glyph::*,
         pdf::font::glyphs::*,
+        pdf::font::provider::*,
         pdf::font::*,
         pdf::link::*,
         pdf::matrix::*,
+        pdf::path::clip_path::*,
         pdf::path::segment::*,
         pdf::path::segments::*,
         pdf::points::*,
@@ -175,7 +205,7 @@ pub mod prelude {
 mod tests {
     use crate::prelude::*;
     use crate::utils::test::test_bind_to_pdfium;
-    use image::ImageFormat;
+    use image_025::ImageFormat;
     use std::fs::File;
     use std::path::Path;
 
@@ -210,9 +240,9 @@ mod tests {
 
             for (index, page) in document.pages().iter().enumerate() {
                 page.render_with_config(&render_config)?
-                    .as_image() // Renders this page to an Image::DynamicImage...
+                    .as_image()? // Renders this page to an Image::DynamicImage...
                     .into_rgb8() // ... then converts it to an Image::Image ...
-                    .save_with_format(format!("test-page-{}.jpg", index), image::ImageFormat::Jpeg) // ... and saves it to a file.
+                    .save_with_format(format!("test-page-{}.jpg", index), ImageFormat::Jpeg) // ... and saves it to a file.
                     .map_err(|_| PdfiumError::ImageError)?;
             }
 
@@ -225,10 +255,7 @@ mod tests {
     #[test]
     #[cfg(not(feature = "static"))]
     fn test_dynamic_bindings() -> Result<(), PdfiumError> {
-        let pdfium = Pdfium::new(
-            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-                .or_else(|_| Pdfium::bind_to_system_library())?,
-        );
+        let pdfium = Pdfium::default();
 
         let document = pdfium.load_pdf_from_file("./test/form-test.pdf", None)?;
 
@@ -242,7 +269,7 @@ mod tests {
         for (index, page) in document.pages().iter().enumerate() {
             let result = page
                 .render_with_config(&render_config)?
-                .as_image()
+                .as_image()?
                 .into_rgb8()
                 .save_with_format(format!("form-test-page-{}.jpg", index), ImageFormat::Jpeg);
 

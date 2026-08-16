@@ -2,21 +2,23 @@
 //! displayed in a combo box or list box form field.
 
 use crate::bindgen::{FPDF_ANNOTATION, FPDF_FORMHANDLE, FPDF_WCHAR};
-use crate::bindings::PdfiumLibraryBindings;
 use crate::error::PdfiumError;
 use crate::pdf::document::page::field::option::PdfFormFieldOption;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use crate::utils::mem::create_byte_buffer;
 use crate::utils::utf16le::get_string_from_pdfium_utf16le_bytes;
+use std::marker::PhantomData;
 use std::ops::{Range, RangeInclusive};
 use std::os::raw::c_int;
 
+/// The zero-based index of a single [PdfFormFieldOption] inside its [PdfFormFieldOptions] collection.
 pub type PdfFormFieldOptionIndex = usize;
 
 /// A collection of all selectable options in a list box or check box form field widget.
 pub struct PdfFormFieldOptions<'a> {
     form_handle: FPDF_FORMHANDLE,
     annotation_handle: FPDF_ANNOTATION,
-    bindings: &'a dyn PdfiumLibraryBindings,
+    lifetime: PhantomData<&'a FPDF_ANNOTATION>,
 }
 
 impl<'a> PdfFormFieldOptions<'a> {
@@ -24,26 +26,20 @@ impl<'a> PdfFormFieldOptions<'a> {
     pub(crate) fn from_pdfium(
         form_handle: FPDF_FORMHANDLE,
         annotation_handle: FPDF_ANNOTATION,
-        bindings: &'a dyn PdfiumLibraryBindings,
     ) -> Self {
         PdfFormFieldOptions {
             form_handle,
             annotation_handle,
-            bindings,
+            lifetime: PhantomData,
         }
-    }
-
-    /// Returns the [PdfiumLibraryBindings] used by this [PdfFormFieldOptions] collection.
-    #[inline]
-    pub fn bindings(&self) -> &'a dyn PdfiumLibraryBindings {
-        self.bindings
     }
 
     /// Returns the number of options in this [PdfFormFieldOptions] collection.
     pub fn len(&self) -> PdfFormFieldOptionIndex {
-        let result = self
-            .bindings
-            .FPDFAnnot_GetOptionCount(self.form_handle, self.annotation_handle);
+        let result = unsafe {
+            self.bindings()
+                .FPDFAnnot_GetOptionCount(self.form_handle, self.annotation_handle)
+        };
 
         if result == -1 {
             0
@@ -89,13 +85,15 @@ impl<'a> PdfFormFieldOptions<'a> {
         // length and call FPDFAnnot_GetOptionLabel() again with a pointer to the buffer;
         // this will write the option label to the buffer in UTF16LE format.
 
-        let buffer_length = self.bindings().FPDFAnnot_GetOptionLabel(
-            self.form_handle,
-            self.annotation_handle,
-            index as c_int,
-            std::ptr::null_mut(),
-            0,
-        );
+        let buffer_length = unsafe {
+            self.bindings().FPDFAnnot_GetOptionLabel(
+                self.form_handle,
+                self.annotation_handle,
+                index as c_int,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
 
         let option_label = if buffer_length == 0 {
             // The field value is not present.
@@ -104,36 +102,46 @@ impl<'a> PdfFormFieldOptions<'a> {
         } else {
             let mut buffer = create_byte_buffer(buffer_length as usize);
 
-            let result = self.bindings().FPDFAnnot_GetOptionLabel(
-                self.form_handle,
-                self.annotation_handle,
-                index as c_int,
-                buffer.as_mut_ptr() as *mut FPDF_WCHAR,
-                buffer_length,
-            );
+            let result = unsafe {
+                self.bindings().FPDFAnnot_GetOptionLabel(
+                    self.form_handle,
+                    self.annotation_handle,
+                    index as c_int,
+                    buffer.as_mut_ptr() as *mut FPDF_WCHAR,
+                    buffer_length,
+                )
+            };
 
             debug_assert_eq!(result, buffer_length);
 
             get_string_from_pdfium_utf16le_bytes(buffer)
         };
 
-        let option_is_set = self
-            .bindings
-            .is_true(self.bindings.FPDFAnnot_IsOptionSelected(
+        let option_is_set = self.bindings().is_true(unsafe {
+            self.bindings().FPDFAnnot_IsOptionSelected(
                 self.form_handle,
                 self.annotation_handle,
                 index as c_int,
-            ));
+            )
+        });
 
         Ok(PdfFormFieldOption::new(index, option_is_set, option_label))
     }
 
     /// Returns an iterator over all the options in this [PdfFormFieldOptions] collection.
     #[inline]
-    pub fn iter(&self) -> PdfFormFieldOptionsIterator {
+    pub fn iter(&self) -> PdfFormFieldOptionsIterator<'_> {
         PdfFormFieldOptionsIterator::new(self)
     }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfFormFieldOptions<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfFormFieldOptions<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfFormFieldOptions<'a> {}
 
 /// An iterator over all the [PdfFormFieldOption] objects in a [PdfFormFieldOptions] collection.
 pub struct PdfFormFieldOptionsIterator<'a> {

@@ -1,44 +1,85 @@
 //! Defines the [PdfPageTextChar] struct, exposing functionality related to a single character
-//! in a `PdfPageTextChars` collection.
+//! in a [PdfPageTextChars] collection.
 
-use crate::bindgen::{FPDF_PAGE, FPDF_TEXTPAGE, FS_MATRIX, FS_RECTF};
-use crate::bindings::PdfiumLibraryBindings;
+use crate::bindgen::{FPDF_DOCUMENT, FPDF_PAGE, FPDF_TEXTPAGE, FS_MATRIX, FS_RECTF};
+use crate::create_transform_getters;
 use crate::error::{PdfiumError, PdfiumInternalError};
 use crate::pdf::color::PdfColor;
 use crate::pdf::document::page::object::text::PdfPageTextRenderMode;
 use crate::pdf::document::page::text::chars::PdfPageTextCharIndex;
 use crate::pdf::font::{FpdfFontDescriptorFlags, PdfFontWeight};
+use crate::pdf::matrix::{PdfMatrix, PdfMatrixValue};
 use crate::pdf::points::PdfPoints;
 use crate::pdf::rect::PdfRect;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use crate::utils::mem::create_byte_buffer;
 use std::convert::TryInto;
-use std::ffi::c_void;
+use std::marker::PhantomData;
+use std::os::raw::c_void;
 
-#[cfg(any(feature = "pdfium_future", feature = "pdfium_6611"))]
-use crate::pdf::document::page::object::text::PdfPageTextObject;
+#[cfg(any(
+    feature = "pdfium_future",
+    feature = "pdfium_7881",
+    feature = "pdfium_7763",
+    feature = "pdfium_7543",
+    feature = "pdfium_7350",
+    feature = "pdfium_7215",
+    feature = "pdfium_7123",
+    feature = "pdfium_6996",
+    feature = "pdfium_6721",
+    feature = "pdfium_6666",
+    feature = "pdfium_6611"
+))]
+use {
+    crate::pdf::document::page::object::text::PdfPageTextObject,
+    crate::pdf::document::page::PdfPageObjectOwnership,
+};
 
-/// A single character in a `PdfPageTextChars` collection.
+#[cfg(doc)]
+use crate::pdf::document::page::text::PdfPageTextChars;
+
+/// A single character in a [PdfPageTextChars] collection.
 pub struct PdfPageTextChar<'a> {
+    document_handle: FPDF_DOCUMENT,
     page_handle: FPDF_PAGE,
     text_page_handle: FPDF_TEXTPAGE,
     index: i32,
-    bindings: &'a dyn PdfiumLibraryBindings,
+    lifetime: PhantomData<&'a FPDF_TEXTPAGE>,
 }
 
 impl<'a> PdfPageTextChar<'a> {
     #[inline]
     pub(crate) fn from_pdfium(
+        document_handle: FPDF_DOCUMENT,
         page_handle: FPDF_PAGE,
         text_page_handle: FPDF_TEXTPAGE,
         index: i32,
-        bindings: &'a dyn PdfiumLibraryBindings,
     ) -> Self {
         PdfPageTextChar {
+            document_handle,
             page_handle,
             text_page_handle,
             index,
-            bindings,
+            lifetime: PhantomData,
         }
+    }
+
+    /// Returns the internal `FPDF_DOCUMENT` handle of the [PdfDocument] containing this [PdfPageTextChar].
+    #[inline]
+    pub(crate) fn document_handle(&self) -> FPDF_DOCUMENT {
+        self.document_handle
+    }
+
+    /// Returns the internal `FPDF_PAGE` handle of the [PdfPage] containing this [PdfPageTextChar].
+    #[inline]
+    pub(crate) fn page_handle(&self) -> FPDF_PAGE {
+        self.page_handle
+    }
+
+    /// Returns the internal `FPDF_TEXTPAGE` handle for this [PdfPageTextChar].
+    #[inline]
+    pub(crate) fn text_page_handle(&self) -> FPDF_TEXTPAGE {
+        self.text_page_handle
     }
 
     #[inline]
@@ -49,19 +90,21 @@ impl<'a> PdfPageTextChar<'a> {
     /// Returns the raw Unicode literal value for this character.
     ///
     /// To return Rust's Unicode `char` representation of this Unicode literal, use the
-    /// [PdfPageTextChar::unicode_char()] function. To return the string representation of this
-    /// Unicode literal, use the [PdfPageTextChar::unicode_string()] function.
+    /// [PdfPageTextChar::unicode_char] function. To return the string representation of this
+    /// Unicode literal, use the [PdfPageTextChar::unicode_string] function.
     #[inline]
     pub fn unicode_value(&self) -> u32 {
-        self.bindings
-            .FPDFText_GetUnicode(self.text_page_handle, self.index)
+        unsafe {
+            self.bindings()
+                .FPDFText_GetUnicode(self.text_page_handle, self.index)
+        }
     }
 
     /// Returns Rust's Unicode `char` representation for this character, if available.
     ///
     /// To return the raw Unicode literal value for this character,
-    /// use the [PdfPageTextChar::unicode_value()] function. To return the string representation of
-    /// this `char`, use the [PdfPageTextChar::unicode_string()] function.
+    /// use the [PdfPageTextChar::unicode_value] function. To return the string representation of
+    /// this `char`, use the [PdfPageTextChar::unicode_string] function.
     #[inline]
     pub fn unicode_char(&self) -> Option<char> {
         char::from_u32(self.unicode_value())
@@ -71,8 +114,8 @@ impl<'a> PdfPageTextChar<'a> {
     /// if available.
     ///
     /// To return the raw Unicode literal value for this character,
-    /// use the [PdfPageTextChar::unicode_value()] function. To return Rust's Unicode `char`
-    /// representation of this Unicode literal, use the [PdfPageTextChar::unicode_char()] function.
+    /// use the [PdfPageTextChar::unicode_value] function. To return Rust's Unicode `char`
+    /// representation of this Unicode literal, use the [PdfPageTextChar::unicode_char] function.
     #[inline]
     pub fn unicode_string(&self) -> Option<String> {
         self.unicode_char().map(|char| char.to_string())
@@ -83,10 +126,10 @@ impl<'a> PdfPageTextChar<'a> {
     /// to the character's transformation matrix.
     ///
     /// To retrieve only the specified font size, ignoring any vertical scaling, use the
-    /// [PdfPageTextChar::unscaled_font_size()] function.
+    /// [PdfPageTextChar::unscaled_font_size] function.
     #[inline]
     pub fn scaled_font_size(&self) -> PdfPoints {
-        PdfPoints::new(self.unscaled_font_size().value * (self.get_vertical_scale() as f32))
+        PdfPoints::new(self.unscaled_font_size().value * self.get_vertical_scale())
     }
 
     /// Returns the font size applied to this character.
@@ -94,13 +137,15 @@ impl<'a> PdfPageTextChar<'a> {
     /// Note that the effective size of the character when rendered may differ from the font size
     /// if a scaling factor has been applied to this character's transformation matrix.
     /// To retrieve the effective font size, taking vertical scaling into account, use the
-    /// [PdfPageTextChar::scaled_font_size()] function.
+    /// [PdfPageTextChar::scaled_font_size] function.
     #[inline]
     pub fn unscaled_font_size(&self) -> PdfPoints {
-        PdfPoints::new(
-            self.bindings
-                .FPDFText_GetFontSize(self.text_page_handle, self.index) as f32,
-        )
+        unsafe {
+            PdfPoints::new(
+                self.bindings()
+                    .FPDFText_GetFontSize(self.text_page_handle, self.index) as f32,
+            )
+        }
     }
 
     /// Returns the font name and raw font descriptor flags for the font applied to this character.
@@ -116,13 +161,15 @@ impl<'a> PdfPageTextChar<'a> {
 
         let mut flags = 0;
 
-        let buffer_length = self.bindings.FPDFText_GetFontInfo(
-            self.text_page_handle,
-            self.index,
-            std::ptr::null_mut(),
-            0,
-            &mut flags,
-        );
+        let buffer_length = unsafe {
+            self.bindings().FPDFText_GetFontInfo(
+                self.text_page_handle,
+                self.index,
+                std::ptr::null_mut(),
+                0,
+                &mut flags,
+            )
+        };
 
         if buffer_length == 0 {
             // The font name is not present.
@@ -135,13 +182,15 @@ impl<'a> PdfPageTextChar<'a> {
 
         let mut buffer = create_byte_buffer(buffer_length as usize);
 
-        let result = self.bindings.FPDFText_GetFontInfo(
-            self.text_page_handle,
-            self.index,
-            buffer.as_mut_ptr() as *mut c_void,
-            buffer_length,
-            &mut flags,
-        );
+        let result = unsafe {
+            self.bindings().FPDFText_GetFontInfo(
+                self.text_page_handle,
+                self.index,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer_length,
+                &mut flags,
+            )
+        };
 
         assert_eq!(result, buffer_length);
 
@@ -166,10 +215,10 @@ impl<'a> PdfPageTextChar<'a> {
     /// Pdfium may not reliably return the correct value of this property for built-in fonts.
     #[inline]
     pub fn font_weight(&self) -> Option<PdfFontWeight> {
-        PdfFontWeight::from_pdfium(
-            self.bindings
-                .FPDFText_GetFontWeight(self.text_page_handle, self.index),
-        )
+        PdfFontWeight::from_pdfium(unsafe {
+            self.bindings()
+                .FPDFText_GetFontWeight(self.text_page_handle, self.index)
+        })
     }
 
     /// Returns the raw font descriptor bitflags for the font applied to this character.
@@ -295,12 +344,25 @@ impl<'a> PdfPageTextChar<'a> {
             .contains(FpdfFontDescriptorFlags::FORCE_BOLD_BIT_19)
     }
 
-    #[cfg(any(feature = "pdfium_6611", feature = "pdfium_future"))]
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350",
+        feature = "pdfium_7215",
+        feature = "pdfium_7123",
+        feature = "pdfium_6996",
+        feature = "pdfium_6721",
+        feature = "pdfium_6666",
+        feature = "pdfium_6611"
+    ))]
     /// Returns the page text object that contains this character.
-    pub fn text_object(&self) -> Result<PdfPageTextObject, PdfiumError> {
-        let object_handle = self
-            .bindings
-            .FPDFText_GetTextObject(self.text_page_handle, self.index);
+    pub fn text_object(&self) -> Result<PdfPageTextObject<'_>, PdfiumError> {
+        let object_handle = unsafe {
+            self.bindings()
+                .FPDFText_GetTextObject(self.text_page_handle(), self.index)
+        };
 
         if object_handle.is_null() {
             Err(PdfiumError::PdfiumLibraryInternalError(
@@ -309,14 +371,24 @@ impl<'a> PdfPageTextChar<'a> {
         } else {
             Ok(PdfPageTextObject::from_pdfium(
                 object_handle,
-                Some(self.page_handle),
-                None,
-                self.bindings,
+                PdfPageObjectOwnership::owned_by_page(self.document_handle(), self.page_handle()),
             ))
         }
     }
 
-    #[cfg(any(feature = "pdfium_6611", feature = "pdfium_future"))]
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350",
+        feature = "pdfium_7215",
+        feature = "pdfium_7123",
+        feature = "pdfium_6996",
+        feature = "pdfium_6721",
+        feature = "pdfium_6666",
+        feature = "pdfium_6611"
+    ))]
     /// Returns the text rendering mode for this character.
     pub fn render_mode(&self) -> Result<PdfPageTextRenderMode, PdfiumError> {
         self.text_object()
@@ -341,30 +413,29 @@ impl<'a> PdfPageTextChar<'a> {
     ))]
     /// Returns the text rendering mode for this character.
     pub fn render_mode(&self) -> Result<PdfPageTextRenderMode, PdfiumError> {
-        PdfPageTextRenderMode::from_pdfium(
-            self.bindings
-                .FPDFText_GetTextRenderMode(self.text_page_handle, self.index) as u32,
-        )
+        PdfPageTextRenderMode::from_pdfium(unsafe {
+            self.bindings()
+                .FPDFText_GetTextRenderMode(self.text_page_handle, self.index)
+        })
     }
 
     /// Returns the fill color applied to this character.
     pub fn fill_color(&self) -> Result<PdfColor, PdfiumError> {
         let mut r = 0;
-
         let mut g = 0;
-
         let mut b = 0;
-
         let mut a = 0;
 
-        if self.bindings.is_true(self.bindings.FPDFText_GetFillColor(
-            self.text_page_handle,
-            self.index,
-            &mut r,
-            &mut g,
-            &mut b,
-            &mut a,
-        )) {
+        if self.bindings().is_true(unsafe {
+            self.bindings().FPDFText_GetFillColor(
+                self.text_page_handle,
+                self.index,
+                &mut r,
+                &mut g,
+                &mut b,
+                &mut a,
+            )
+        }) {
             Ok(PdfColor::new(
                 r.try_into()
                     .map_err(PdfiumError::UnableToConvertPdfiumColorValueToRustu8)?,
@@ -383,21 +454,20 @@ impl<'a> PdfPageTextChar<'a> {
     /// Returns the stroke color applied to this character.
     pub fn stroke_color(&self) -> Result<PdfColor, PdfiumError> {
         let mut r = 0;
-
         let mut g = 0;
-
         let mut b = 0;
-
         let mut a = 0;
 
-        if self.bindings.is_true(self.bindings.FPDFText_GetStrokeColor(
-            self.text_page_handle,
-            self.index,
-            &mut r,
-            &mut g,
-            &mut b,
-            &mut a,
-        )) {
+        if self.bindings().is_true(unsafe {
+            self.bindings().FPDFText_GetStrokeColor(
+                self.text_page_handle(),
+                self.index,
+                &mut r,
+                &mut g,
+                &mut b,
+                &mut a,
+            )
+        }) {
             Ok(PdfColor::new(
                 r.try_into()
                     .map_err(PdfiumError::UnableToConvertPdfiumColorValueToRustu8)?,
@@ -422,11 +492,12 @@ impl<'a> PdfPageTextChar<'a> {
     /// Returns the rotation angle of this character, expressed in radians.
     #[inline]
     pub fn angle_radians(&self) -> Result<f32, PdfiumError> {
-        let result = self
-            .bindings
-            .FPDFText_GetCharAngle(self.text_page_handle, self.index);
+        let result = unsafe {
+            self.bindings()
+                .FPDFText_GetCharAngle(self.text_page_handle, self.index)
+        };
 
-        if result == -1.0 {
+        if result.is_sign_negative() {
             Err(PdfiumError::PdfiumFunctionReturnValueIndicatedFailure)
         } else {
             Ok(result)
@@ -436,25 +507,24 @@ impl<'a> PdfPageTextChar<'a> {
     /// Returns a precise bounding box for this character, taking the character's specific
     /// shape into account.
     ///
-    /// To return a loose bounding box that covers the entire glyph bounds, use the
-    /// [PdfPageTextChar::loose_bounds()] function.
+    /// To return a loose bounding box that contains the entire glyph bounds, use the
+    /// [PdfPageTextChar::loose_bounds] function.
     pub fn tight_bounds(&self) -> Result<PdfRect, PdfiumError> {
         let mut left = 0.0;
-
         let mut bottom = 0.0;
-
         let mut right = 0.0;
-
         let mut top = 0.0;
 
-        let result = self.bindings.FPDFText_GetCharBox(
-            self.text_page_handle,
-            self.index,
-            &mut left,
-            &mut right,
-            &mut bottom,
-            &mut top,
-        );
+        let result = unsafe {
+            self.bindings().FPDFText_GetCharBox(
+                self.text_page_handle(),
+                self.index,
+                &mut left,
+                &mut right,
+                &mut bottom,
+                &mut top,
+            )
+        };
 
         PdfRect::from_pdfium_as_result(
             result,
@@ -464,14 +534,14 @@ impl<'a> PdfPageTextChar<'a> {
                 right: right as f32,
                 bottom: bottom as f32,
             },
-            self.bindings,
+            self.bindings(),
         )
     }
 
-    /// Returns a loose bounding box for this character, covering the entire glyph bounds.
+    /// Returns a loose bounding box for this character, containing the entire glyph bounds.
     ///
     /// To return a tight bounding box that takes this character's specific shape into
-    /// account, use the [PdfPageTextChar::tight_bounds()] function.
+    /// account, use the [PdfPageTextChar::tight_bounds] function.
     pub fn loose_bounds(&self) -> Result<PdfRect, PdfiumError> {
         let mut bounds = FS_RECTF {
             left: 0.0,
@@ -480,15 +550,19 @@ impl<'a> PdfPageTextChar<'a> {
             bottom: 0.0,
         };
 
-        let result =
-            self.bindings
-                .FPDFText_GetLooseCharBox(self.text_page_handle, self.index, &mut bounds);
+        let result = unsafe {
+            self.bindings().FPDFText_GetLooseCharBox(
+                self.text_page_handle(),
+                self.index,
+                &mut bounds,
+            )
+        };
 
-        PdfRect::from_pdfium_as_result(result, bounds, self.bindings)
+        PdfRect::from_pdfium_as_result(result, bounds, self.bindings())
     }
 
     /// Returns the current raw transformation matrix for this character.
-    fn matrix(&self) -> Result<FS_MATRIX, PdfiumError> {
+    fn get_matrix_impl(&self) -> Result<PdfMatrix, PdfiumError> {
         let mut matrix = FS_MATRIX {
             a: 0.0,
             b: 0.0,
@@ -498,12 +572,11 @@ impl<'a> PdfPageTextChar<'a> {
             f: 0.0,
         };
 
-        if self.bindings.is_true(self.bindings.FPDFText_GetMatrix(
-            self.text_page_handle,
-            self.index,
-            &mut matrix,
-        )) {
-            Ok(matrix)
+        if self.bindings().is_true(unsafe {
+            self.bindings()
+                .FPDFText_GetMatrix(self.text_page_handle(), self.index, &mut matrix)
+        }) {
+            Ok(PdfMatrix::from_pdfium(matrix))
         } else {
             Err(PdfiumError::PdfiumLibraryInternalError(
                 PdfiumInternalError::Unknown,
@@ -511,146 +584,11 @@ impl<'a> PdfPageTextChar<'a> {
         }
     }
 
-    /// Returns the current horizontal and vertical translation of the origin of this character.
-    #[inline]
-    pub fn get_translation(&self) -> (PdfPoints, PdfPoints) {
-        (
-            self.get_horizontal_translation(),
-            self.get_vertical_translation(),
-        )
-    }
-
-    /// Returns the current horizontal translation of the origin of this character.
-    #[inline]
-    pub fn get_horizontal_translation(&self) -> PdfPoints {
-        self.matrix()
-            .map(|matrix| PdfPoints::new(matrix.e))
-            .unwrap_or(PdfPoints::ZERO)
-    }
-
-    /// Returns the current vertical translation of the origin of this character.
-    #[inline]
-    pub fn get_vertical_translation(&self) -> PdfPoints {
-        self.matrix()
-            .map(|matrix| PdfPoints::new(matrix.f))
-            .unwrap_or(PdfPoints::ZERO)
-    }
-
-    /// Returns the current horizontal and vertical scale factors applied to this character.
-    #[inline]
-    pub fn get_scale(&self) -> (f64, f64) {
-        (self.get_horizontal_scale(), self.get_vertical_scale())
-    }
-
-    /// Returns the current horizontal scale factor applied to this character.
-    #[inline]
-    pub fn get_horizontal_scale(&self) -> f64 {
-        self.matrix().map(|matrix| matrix.a).unwrap_or(0.0) as f64
-    }
-
-    /// Returns the current vertical scale factor applied to this character.
-    #[inline]
-    pub fn get_vertical_scale(&self) -> f64 {
-        self.matrix().map(|matrix| matrix.d).unwrap_or(0.0) as f64
-    }
-
-    /// Returns the counter-clockwise rotation applied to this character, in degrees.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_rotation_counter_clockwise_degrees(&self) -> f32 {
-        self.get_rotation_counter_clockwise_radians().to_degrees()
-    }
-
-    /// Returns the clockwise rotation applied to this character, in degrees.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_rotation_clockwise_degrees(&self) -> f32 {
-        -self.get_rotation_counter_clockwise_degrees()
-    }
-
-    /// Returns the counter-clockwise rotation applied to this character, in radians.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_rotation_counter_clockwise_radians(&self) -> f32 {
-        self.matrix()
-            .map(|matrix| matrix.b.atan2(matrix.a))
-            .unwrap_or(0.0)
-    }
-
-    /// Returns the clockwise rotation applied to this character, in radians.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_rotation_clockwise_radians(&self) -> f32 {
-        -self.get_rotation_counter_clockwise_radians()
-    }
-
-    /// Returns the current x axis and y axis skew angles applied to this character, in degrees.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_skew_degrees(&self) -> (f32, f32) {
-        (
-            self.get_x_axis_skew_degrees(),
-            self.get_y_axis_skew_degrees(),
-        )
-    }
-
-    /// Returns the current x axis skew angle applied to this character, in degrees.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_x_axis_skew_degrees(&self) -> f32 {
-        self.get_x_axis_skew_radians().to_degrees()
-    }
-
-    /// Returns the current y axis skew applied to this character, in degrees.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_y_axis_skew_degrees(&self) -> f32 {
-        self.get_y_axis_skew_radians().to_degrees()
-    }
-
-    /// Returns the current x axis and y axis skew angles applied to this character, in radians.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_skew_radians(&self) -> (f32, f32) {
-        (
-            self.get_x_axis_skew_radians(),
-            self.get_y_axis_skew_radians(),
-        )
-    }
-
-    /// Returns the current x axis skew applied to this character, in radians.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_x_axis_skew_radians(&self) -> f32 {
-        self.matrix().map(|matrix| matrix.b.atan()).unwrap_or(0.0)
-    }
-
-    /// Returns the current y axis skew applied to this character, in radians.
-    ///
-    /// If the character is both rotated and skewed, the return value of this function will reflect
-    /// the combined operation.
-    #[inline]
-    pub fn get_y_axis_skew_radians(&self) -> f32 {
-        self.matrix().map(|matrix| matrix.c.atan()).unwrap_or(0.0)
-    }
+    create_transform_getters!(
+        "this [PdfPageTextChar]",
+        "this [PdfPageTextChar].",
+        "this [PdfPageTextChar],"
+    );
 
     /// Returns the origin x and y positions of this character relative to its containing page.
     pub fn origin(&self) -> Result<(PdfPoints, PdfPoints), PdfiumError> {
@@ -658,12 +596,14 @@ impl<'a> PdfPageTextChar<'a> {
 
         let mut y = 0.0;
 
-        if self.bindings.is_true(self.bindings.FPDFText_GetCharOrigin(
-            self.text_page_handle,
-            self.index,
-            &mut x,
-            &mut y,
-        )) {
+        if self.bindings().is_true(unsafe {
+            self.bindings().FPDFText_GetCharOrigin(
+                self.text_page_handle(),
+                self.index,
+                &mut x,
+                &mut y,
+            )
+        }) {
             Ok((PdfPoints::new(x as f32), PdfPoints::new(y as f32)))
         } else {
             Err(PdfiumError::PdfiumLibraryInternalError(
@@ -688,11 +628,76 @@ impl<'a> PdfPageTextChar<'a> {
     #[inline]
     pub fn has_descender(&self) -> bool {
         self.tight_bounds()
-            .map(|bounds| bounds.bottom.value)
+            .map(|bounds| bounds.bottom().value)
             .unwrap_or(0.0)
             < self
                 .loose_bounds()
-                .map(|bounds| bounds.bottom.value)
+                .map(|bounds| bounds.bottom().value)
                 .unwrap_or(0.0)
     }
+
+    /// Returns `true` if this character was generated by Pdfium. This can be the case for
+    /// certain spacing, breaking, and justification-related characters.
+    #[inline]
+    pub fn is_generated(&self) -> Result<bool, PdfiumError> {
+        match unsafe {
+            self.bindings()
+                .FPDFText_IsGenerated(self.text_page_handle(), self.index)
+        } {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => Err(PdfiumError::PdfiumLibraryInternalError(
+                PdfiumInternalError::Unknown,
+            )),
+        }
+    }
+
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350",
+        feature = "pdfium_7215",
+        feature = "pdfium_7123",
+        feature = "pdfium_6996",
+        feature = "pdfium_6721",
+        feature = "pdfium_6666",
+        feature = "pdfium_6611",
+        feature = "pdfium_6569",
+        feature = "pdfium_6555",
+        feature = "pdfium_6490",
+        feature = "pdfium_6406",
+        feature = "pdfium_6337",
+        feature = "pdfium_6295",
+        feature = "pdfium_6259",
+        feature = "pdfium_6164",
+        feature = "pdfium_6124",
+        feature = "pdfium_6110",
+        feature = "pdfium_6084",
+        feature = "pdfium_6043",
+        feature = "pdfium_6015",
+    ))]
+    /// Returns `true` if this character is recognized as a hyphen by Pdfium.
+    #[inline]
+    pub fn is_hyphen(&self) -> Result<bool, PdfiumError> {
+        match unsafe {
+            self.bindings()
+                .FPDFText_IsHyphen(self.text_page_handle(), self.index)
+        } {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => Err(PdfiumError::PdfiumLibraryInternalError(
+                PdfiumInternalError::Unknown,
+            )),
+        }
+    }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfPageTextChar<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfPageTextChar<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfPageTextChar<'a> {}

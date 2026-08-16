@@ -25,11 +25,14 @@ use crate::pdf::document::page::field::button::PdfFormPushButtonField;
 use crate::pdf::document::page::field::checkbox::PdfFormCheckboxField;
 use crate::pdf::document::page::field::combo::PdfFormComboBoxField;
 use crate::pdf::document::page::field::list::PdfFormListBoxField;
-use crate::pdf::document::page::field::private::internal::PdfFormFieldPrivate;
+use crate::pdf::document::page::field::private::internal::{
+    PdfFormFieldFlags, PdfFormFieldPrivate,
+};
 use crate::pdf::document::page::field::radio::PdfFormRadioButtonField;
 use crate::pdf::document::page::field::signature::PdfFormSignatureField;
 use crate::pdf::document::page::field::text::PdfFormTextField;
 use crate::pdf::document::page::field::unknown::PdfFormUnknownField;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use std::os::raw::c_int;
 
 #[cfg(doc)]
@@ -102,7 +105,7 @@ impl<'a> PdfFormField<'a> {
         annotation_handle: FPDF_ANNOTATION,
         bindings: &'a dyn PdfiumLibraryBindings,
     ) -> Option<Self> {
-        let result = bindings.FPDFAnnot_GetFormFieldType(form_handle, annotation_handle);
+        let result = unsafe { bindings.FPDFAnnot_GetFormFieldType(form_handle, annotation_handle) };
 
         if result == -1 {
             return None;
@@ -113,34 +116,31 @@ impl<'a> PdfFormField<'a> {
 
         Some(match form_field_type {
             PdfFormFieldType::PushButton => PdfFormField::PushButton(
-                PdfFormPushButtonField::from_pdfium(form_handle, annotation_handle, bindings),
+                PdfFormPushButtonField::from_pdfium(form_handle, annotation_handle),
             ),
             PdfFormFieldType::Checkbox => PdfFormField::Checkbox(
-                PdfFormCheckboxField::from_pdfium(form_handle, annotation_handle, bindings),
+                PdfFormCheckboxField::from_pdfium(form_handle, annotation_handle),
             ),
             PdfFormFieldType::RadioButton => PdfFormField::RadioButton(
-                PdfFormRadioButtonField::from_pdfium(form_handle, annotation_handle, bindings),
+                PdfFormRadioButtonField::from_pdfium(form_handle, annotation_handle),
             ),
             PdfFormFieldType::ComboBox => PdfFormField::ComboBox(
-                PdfFormComboBoxField::from_pdfium(form_handle, annotation_handle, bindings),
+                PdfFormComboBoxField::from_pdfium(form_handle, annotation_handle),
             ),
             PdfFormFieldType::ListBox => PdfFormField::ListBox(PdfFormListBoxField::from_pdfium(
                 form_handle,
                 annotation_handle,
-                bindings,
             )),
             PdfFormFieldType::Text => PdfFormField::Text(PdfFormTextField::from_pdfium(
                 form_handle,
                 annotation_handle,
-                bindings,
             )),
             PdfFormFieldType::Signature => PdfFormField::Signature(
-                PdfFormSignatureField::from_pdfium(form_handle, annotation_handle, bindings),
+                PdfFormSignatureField::from_pdfium(form_handle, annotation_handle),
             ),
             _ => PdfFormField::Unknown(PdfFormUnknownField::from_pdfium(
                 form_handle,
                 annotation_handle,
-                bindings,
             )),
         })
     }
@@ -177,7 +177,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormPushButtonField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::PushButton].
     #[inline]
-    pub fn as_push_button_field(&self) -> Option<&PdfFormPushButtonField> {
+    pub fn as_push_button_field(&self) -> Option<&PdfFormPushButtonField<'_>> {
         match self {
             PdfFormField::PushButton(field) => Some(field),
             _ => None,
@@ -187,7 +187,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormCheckboxField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::Checkbox].
     #[inline]
-    pub fn as_checkbox_field(&self) -> Option<&PdfFormCheckboxField> {
+    pub fn as_checkbox_field(&self) -> Option<&PdfFormCheckboxField<'_>> {
         match self {
             PdfFormField::Checkbox(field) => Some(field),
             _ => None,
@@ -207,7 +207,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormRadioButtonField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::RadioButton].
     #[inline]
-    pub fn as_radio_button_field(&self) -> Option<&PdfFormRadioButtonField> {
+    pub fn as_radio_button_field(&self) -> Option<&PdfFormRadioButtonField<'_>> {
         match self {
             PdfFormField::RadioButton(field) => Some(field),
             _ => None,
@@ -227,7 +227,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormComboBoxField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::ComboBox].
     #[inline]
-    pub fn as_combo_box_field(&self) -> Option<&PdfFormComboBoxField> {
+    pub fn as_combo_box_field(&self) -> Option<&PdfFormComboBoxField<'_>> {
         match self {
             PdfFormField::ComboBox(field) => Some(field),
             _ => None,
@@ -237,7 +237,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormListBoxField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::ListBox].
     #[inline]
-    pub fn as_list_box_field(&self) -> Option<&PdfFormListBoxField> {
+    pub fn as_list_box_field(&self) -> Option<&PdfFormListBoxField<'_>> {
         match self {
             PdfFormField::ListBox(field) => Some(field),
             _ => None,
@@ -247,7 +247,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormSignatureField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::Signature].
     #[inline]
-    pub fn as_signature_field(&self) -> Option<&PdfFormSignatureField> {
+    pub fn as_signature_field(&self) -> Option<&PdfFormSignatureField<'_>> {
         match self {
             PdfFormField::Signature(field) => Some(field),
             _ => None,
@@ -257,7 +257,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormTextField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::Text].
     #[inline]
-    pub fn as_text_field(&self) -> Option<&PdfFormTextField> {
+    pub fn as_text_field(&self) -> Option<&PdfFormTextField<'_>> {
         match self {
             PdfFormField::Text(field) => Some(field),
             _ => None,
@@ -276,7 +276,7 @@ impl<'a> PdfFormField<'a> {
     /// Returns a reference to the underlying [PdfFormUnknownField] for this [PdfFormField],
     /// if this form field has a field type of [PdfFormField::Unknown].
     #[inline]
-    pub fn as_unknown_field(&self) -> Option<&PdfFormUnknownField> {
+    pub fn as_unknown_field(&self) -> Option<&PdfFormUnknownField<'_>> {
         match self {
             PdfFormField::Unknown(field) => Some(field),
             _ => None,
@@ -295,6 +295,65 @@ pub trait PdfFormFieldCommon {
     /// Returns the value currently set for the given appearance mode for this [PdfFormField],
     /// if any.
     fn appearance_mode_value(&self, appearance_mode: PdfAppearanceMode) -> Option<String>;
+
+    /// Returns `true` if the value of this [PdfFormField] is read only.
+    ///
+    /// Users may not change the value of read-only fields, and any associated widget
+    /// annotations will not interact with the user; that is, they will not respond
+    /// to mouse clicks or change their appearance in response to mouse motions.
+    fn is_read_only(&self) -> bool;
+
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350"
+    ))]
+    /// Controls whether or not the value of this [PdfFormField] is read only.
+    fn set_is_read_only(&mut self, is_read_only: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if this [PdfFormField] must have a value at the time it is exported
+    /// by any "submit form" action.
+    ///
+    /// For more information on "submit form" actions, refer to Section 8.6.4 of
+    /// The PDF Reference (Sixth Edition, PDF Format 1.7), starting on page 702.
+    fn is_required(&self) -> bool;
+
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350"
+    ))]
+    /// Controls whether or not this [PdfFormField] must have a value at the time it is
+    /// exported by any "submit form" action.
+    ///
+    /// For more information on "submit form" actions, refer to Section 8.6.4 of
+    /// The PDF Reference (Sixth Edition, PDF Format 1.7), starting on page 702.
+    fn set_is_required(&mut self, is_required: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if the value of this [PdfFormField] will be exported by any
+    /// "submit form" action.
+    ///
+    /// For more information on "submit form" actions, refer to Section 8.6.4 of
+    /// The PDF Reference (Sixth Edition, PDF Format 1.7), starting on page 702.
+    fn is_exported_on_submit(&self) -> bool;
+
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350"
+    ))]
+    /// Controls whether or not the value of this [PdfFormField] will be exported by any
+    /// "submit form" action.
+    ///
+    /// For more information on "submit form" actions, refer to Section 8.6.4 of
+    /// The PDF Reference Manual, version 1.7, starting on page 702.
+    fn set_is_exported_on_submit(&mut self, is_exported: bool) -> Result<(), PdfiumError>;
 }
 
 // Blanket implementation for all PdfFormFieldCommon types.
@@ -317,24 +376,78 @@ where
     fn appearance_mode_value(&self, appearance_mode: PdfAppearanceMode) -> Option<String> {
         self.appearance_mode_value_impl(appearance_mode)
     }
+
+    #[inline]
+    fn is_read_only(&self) -> bool {
+        self.get_flags_impl().contains(PdfFormFieldFlags::ReadOnly)
+    }
+
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350"
+    ))]
+    #[inline]
+    fn set_is_read_only(&mut self, is_read_only: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfFormFieldFlags::ReadOnly, is_read_only)
+    }
+
+    #[inline]
+    fn is_required(&self) -> bool {
+        self.get_flags_impl().contains(PdfFormFieldFlags::Required)
+    }
+
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350"
+    ))]
+    #[inline]
+    fn set_is_required(&mut self, is_required: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfFormFieldFlags::Required, is_required)
+    }
+
+    #[inline]
+    fn is_exported_on_submit(&self) -> bool {
+        !self.get_flags_impl().contains(PdfFormFieldFlags::NoExport)
+    }
+
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350"
+    ))]
+    #[inline]
+    fn set_is_exported_on_submit(&mut self, is_exported: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfFormFieldFlags::NoExport, !is_exported)
+    }
 }
 
 impl<'a> PdfFormFieldPrivate<'a> for PdfFormField<'a> {
     #[inline]
-    fn form_handle(&self) -> &FPDF_FORMHANDLE {
+    fn form_handle(&self) -> FPDF_FORMHANDLE {
         self.unwrap_as_trait().form_handle()
     }
 
     #[inline]
-    fn annotation_handle(&self) -> &FPDF_ANNOTATION {
+    fn annotation_handle(&self) -> FPDF_ANNOTATION {
         self.unwrap_as_trait().annotation_handle()
     }
-
-    #[inline]
-    fn bindings(&self) -> &dyn PdfiumLibraryBindings {
-        self.unwrap_as_trait().bindings()
-    }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfFormField<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfFormField<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfFormField<'a> {}
 
 impl<'a> From<PdfFormPushButtonField<'a>> for PdfFormField<'a> {
     #[inline]

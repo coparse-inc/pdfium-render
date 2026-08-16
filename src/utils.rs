@@ -1,7 +1,7 @@
 pub(crate) mod pixels {
 
+    const BYTES_PER_GRAYSCALE_PIXEL: usize = 1;
     const BYTES_PER_THREE_CHANNEL_PIXEL: usize = 3;
-
     const BYTES_PER_FOUR_CHANNEL_PIXEL: usize = 4;
 
     /// Converts the given byte array, containing pixel data encoded as three-channel RGB,
@@ -131,6 +131,26 @@ pub(crate) mod pixels {
         // is the same irrespective of the pixel color format.
         aligned_rgb_to_rgba(bgr, width, stride)
     }
+
+    /// Converts the given byte array, containing pixel data encoded as one-channel grayscale
+    /// with one or more empty alignment bytes alignment bytes, into unaligned pixel data.
+    ///
+    /// Alignment bytes are used to ensure that the stride of a bitmap - the length in bytes of
+    /// a single scanline - is always a multiple of four, irrespective of the pixel data format.
+    /// The number of empty alignment bytes to be skipped is determined from the given width
+    /// and stride parameters.
+    #[inline]
+    pub(crate) fn aligned_grayscale_to_unaligned(
+        grayscale: &[u8],
+        width: usize,
+        stride: usize,
+    ) -> Vec<u8> {
+        grayscale
+            .chunks_exact(stride)
+            .flat_map(|scanline| &scanline[..width * BYTES_PER_GRAYSCALE_PIXEL])
+            .copied()
+            .collect::<Vec<_>>()
+    }
 }
 
 pub(crate) mod dates {
@@ -151,7 +171,7 @@ pub(crate) mod dates {
             .replace("+00:00'", "Z00'00'")
             .replace(':', "'");
 
-        format!("D:{}{}", date_part, timezone_part)
+        format!("D:{date_part}{timezone_part}")
     }
 }
 
@@ -240,7 +260,6 @@ pub(crate) mod files {
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::ops::Deref;
     use std::os::raw::{c_int, c_uchar, c_ulong, c_void};
-    use std::ptr::null_mut;
     use std::slice;
 
     // These functions return wrapped versions of Pdfium's file access structs. They are used
@@ -283,7 +302,7 @@ pub(crate) mod files {
         let mut result = Box::new(FpdfFileAccessExt {
             content_length,
             get_block: Some(read_block_from_callback),
-            file_access_ptr: null_mut(), // We'll set this value in just a moment.
+            file_access_ptr: std::ptr::null_mut(), // We'll set this value in just a moment.
             reader: Box::new(reader),
         });
 
@@ -363,7 +382,7 @@ pub(crate) mod files {
     /// output source for Pdfium's file writing callback function.
     pub(crate) fn get_pdfium_file_writer_from_writer<W: Write + 'static>(
         writer: &mut W,
-    ) -> FpdfFileWriteExt {
+    ) -> FpdfFileWriteExt<'_> {
         FpdfFileWriteExt {
             version: 1,
             write_block: Some(write_block_from_callback),
@@ -438,6 +457,7 @@ pub(crate) mod test {
     // Provides a function that binds to the correct Pdfium configuration during unit tests,
     // depending on selected crate features.
 
+    use crate::error::PdfiumError;
     use crate::pdfium::Pdfium;
 
     #[inline]
@@ -449,11 +469,18 @@ pub(crate) mod test {
     #[inline]
     #[cfg(not(feature = "static"))]
     pub(crate) fn test_bind_to_pdfium() -> Pdfium {
-        Pdfium::new(
-            Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-                .or_else(|_| Pdfium::bind_to_system_library())
-                .unwrap(),
-        )
+        match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
+            .or_else(|_| Pdfium::bind_to_system_library())
+        {
+            Ok(bindings) => Pdfium::new(bindings), // Create new bindings
+            Err(PdfiumError::PdfiumLibraryBindingsAlreadyInitialized) => Pdfium {
+                custom_font_provider: None,
+
+                #[cfg(not(target_arch = "wasm32"))]
+                platform_default_font_provider: None,
+            }, // Re-use existing bindings
+            Err(e) => Err(e).unwrap(),             // Explicitly re-throw the error
+        }
     }
 }
 
@@ -461,6 +488,7 @@ pub(crate) mod test {
 mod tests {
     use crate::utils::dates::*;
     use crate::utils::pixels::*;
+    use crate::utils::utf16le::*;
     use chrono::prelude::*;
 
     // Tests of color conversion functions.
@@ -572,6 +600,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_aligned_grayscale_to_unaligned() {
+        let data: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
+        let result = aligned_grayscale_to_unaligned(data.as_slice(), 1, 4);
+
+        assert_eq!(result, [0, 4, 8, 12]);
+    }
+
     // Tests of date time conversion functions.
 
     #[test]
@@ -595,5 +632,15 @@ mod tests {
             ),
             "D:19981223195200-08'00'"
         )
+    }
+
+    #[test]
+    fn test_valid_utf16le_from_emoji() {
+        let emoji = "💁👵🧕";
+
+        assert_eq!(
+            get_string_from_pdfium_utf16le_bytes(get_pdfium_utf16le_bytes_from_str(emoji)).unwrap(),
+            emoji
+        );
     }
 }

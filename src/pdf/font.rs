@@ -3,36 +3,26 @@
 
 pub mod glyph;
 pub mod glyphs;
+pub mod provider;
 
-use crate::bindgen::{FPDF_FONT, FPDF_FONT_TRUETYPE, FPDF_FONT_TYPE1};
-use crate::bindings::PdfiumLibraryBindings;
+use crate::bindgen::{
+    FPDF_FONT, FXFONT_ANSI_CHARSET, FXFONT_ARABIC_CHARSET, FXFONT_CHINESEBIG5_CHARSET,
+    FXFONT_CYRILLIC_CHARSET, FXFONT_DEFAULT_CHARSET, FXFONT_EASTERNEUROPEAN_CHARSET,
+    FXFONT_GB2312_CHARSET, FXFONT_GREEK_CHARSET, FXFONT_HANGEUL_CHARSET, FXFONT_HEBREW_CHARSET,
+    FXFONT_SHIFTJIS_CHARSET, FXFONT_SYMBOL_CHARSET, FXFONT_THAI_CHARSET, FXFONT_VIETNAMESE_CHARSET,
+};
 use crate::error::{PdfiumError, PdfiumInternalError};
 use crate::pdf::document::fonts::PdfFontBuiltin;
-use crate::pdf::document::PdfDocument;
 use crate::pdf::font::glyphs::PdfFontGlyphs;
 use crate::pdf::points::PdfPoints;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use crate::utils::mem::create_byte_buffer;
 use bitflags::bitflags;
-use std::io::Read;
-use std::os::raw::{c_char, c_int, c_uint};
+use std::marker::PhantomData;
+use std::os::raw::{c_char, c_int};
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::fs::File;
-
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen::JsCast;
-
-#[cfg(target_arch = "wasm32")]
-use wasm_bindgen_futures::JsFuture;
-
-#[cfg(target_arch = "wasm32")]
-use js_sys::{ArrayBuffer, Uint8Array};
-
-#[cfg(target_arch = "wasm32")]
-use web_sys::{window, Blob, Response};
+#[cfg(doc)]
+use crate::pdf::document::PdfDocument;
 
 // The following dummy declaration is used only when running cargo doc.
 // It allows documentation of WASM-specific functionality to be included
@@ -90,6 +80,65 @@ impl PdfFontWeight {
     }
 }
 
+/// The character set of a [PdfFont].
+pub enum PdfFontCharacterSet {
+    Ansi,
+    Default,
+    Symbol,
+    JapaneseShiftJis,
+    KoreanHangul,
+    ChineseGb2312,
+    ChineseBig5,
+    Greek,
+    Vietnamese,
+    Hebrew,
+    Arabic,
+    Cyrillic,
+    Thai,
+    EasternEuropean,
+}
+
+impl PdfFontCharacterSet {
+    pub(crate) fn from_pdfium(value: c_int) -> Option<PdfFontCharacterSet> {
+        match value as u32 {
+            FXFONT_ANSI_CHARSET => Some(PdfFontCharacterSet::Ansi),
+            FXFONT_DEFAULT_CHARSET => Some(PdfFontCharacterSet::Default),
+            FXFONT_SYMBOL_CHARSET => Some(PdfFontCharacterSet::Symbol),
+            FXFONT_SHIFTJIS_CHARSET => Some(PdfFontCharacterSet::JapaneseShiftJis),
+            FXFONT_HANGEUL_CHARSET => Some(PdfFontCharacterSet::KoreanHangul),
+            FXFONT_GB2312_CHARSET => Some(PdfFontCharacterSet::ChineseGb2312),
+            FXFONT_CHINESEBIG5_CHARSET => Some(PdfFontCharacterSet::ChineseBig5),
+            FXFONT_GREEK_CHARSET => Some(PdfFontCharacterSet::Greek),
+            FXFONT_VIETNAMESE_CHARSET => Some(PdfFontCharacterSet::Vietnamese),
+            FXFONT_HEBREW_CHARSET => Some(PdfFontCharacterSet::Hebrew),
+            FXFONT_ARABIC_CHARSET => Some(PdfFontCharacterSet::Arabic),
+            FXFONT_CYRILLIC_CHARSET => Some(PdfFontCharacterSet::Cyrillic),
+            FXFONT_THAI_CHARSET => Some(PdfFontCharacterSet::Thai),
+            FXFONT_EASTERNEUROPEAN_CHARSET => Some(PdfFontCharacterSet::EasternEuropean),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn as_pdfium(&self) -> c_int {
+        (match self {
+            PdfFontCharacterSet::Ansi => FXFONT_ANSI_CHARSET,
+            PdfFontCharacterSet::Default => FXFONT_DEFAULT_CHARSET,
+            PdfFontCharacterSet::Symbol => FXFONT_SYMBOL_CHARSET,
+            PdfFontCharacterSet::JapaneseShiftJis => FXFONT_SHIFTJIS_CHARSET,
+            PdfFontCharacterSet::KoreanHangul => FXFONT_HANGEUL_CHARSET,
+            PdfFontCharacterSet::ChineseGb2312 => FXFONT_GB2312_CHARSET,
+            PdfFontCharacterSet::ChineseBig5 => FXFONT_CHINESEBIG5_CHARSET,
+            PdfFontCharacterSet::Greek => FXFONT_GREEK_CHARSET,
+            PdfFontCharacterSet::Vietnamese => FXFONT_VIETNAMESE_CHARSET,
+            PdfFontCharacterSet::Hebrew => FXFONT_HEBREW_CHARSET,
+            PdfFontCharacterSet::Arabic => FXFONT_ARABIC_CHARSET,
+            PdfFontCharacterSet::Cyrillic => FXFONT_CYRILLIC_CHARSET,
+            PdfFontCharacterSet::Thai => FXFONT_THAI_CHARSET,
+            PdfFontCharacterSet::EasternEuropean => FXFONT_EASTERNEUROPEAN_CHARSET,
+        }) as c_int
+    }
+}
+
 /// A single font used to render text in a [PdfDocument].
 ///
 /// The PDF specification defines 14 built-in fonts that can be used in any PDF file without
@@ -98,651 +147,24 @@ impl PdfFontWeight {
 pub struct PdfFont<'a> {
     built_in: Option<PdfFontBuiltin>,
     handle: FPDF_FONT,
-    bindings: &'a dyn PdfiumLibraryBindings,
     glyphs: PdfFontGlyphs<'a>,
     is_font_memory_loaded: bool,
+    lifetime: PhantomData<&'a FPDF_FONT>,
 }
 
 impl<'a> PdfFont<'a> {
     #[inline]
     pub(crate) fn from_pdfium(
         handle: FPDF_FONT,
-        bindings: &'a dyn PdfiumLibraryBindings,
         built_in: Option<PdfFontBuiltin>,
         is_font_memory_loaded: bool,
     ) -> Self {
         PdfFont {
             built_in,
             handle,
-            bindings,
-            glyphs: PdfFontGlyphs::from_pdfium(handle, bindings),
+            glyphs: PdfFontGlyphs::from_pdfium(handle),
             is_font_memory_loaded,
-        }
-    }
-
-    /// Creates a new [PdfFont] from the given given built-in font argument.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::new_built_in()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::new_built_in() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn new_built_in(document: &'a PdfDocument<'a>, font: PdfFontBuiltin) -> PdfFont<'a> {
-        Self::from_pdfium(
-            document
-                .bindings()
-                .FPDFText_LoadStandardFont(document.handle(), font.to_pdf_font_name()),
-            document.bindings(),
-            Some(font),
-            true,
-        )
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Times-Roman" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::times_roman()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::times_roman() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn times_roman(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::TimesRoman)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Times-Bold" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::times_bold()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::times_bold() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn times_bold(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::TimesBold)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Times-Italic" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::times_italic()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::times_italic() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn times_italic(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::TimesItalic)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Times-BoldItalic" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::times_bold_italic()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::times_bold_italic() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn times_bold_italic(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::TimesBoldItalic)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Helvetica" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::helvetica()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::helvetica() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn helvetica(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::Helvetica)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Helvetica-Bold" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::helvetica_bold()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::helvetica_bold() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn helvetica_bold(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::HelveticaBold)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Helvetica-Oblique" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::helvetica_oblique()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::helvetica_oblique() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn helvetica_oblique(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::HelveticaOblique)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Helvetica-BoldOblique" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::helvetica_bold_oblique()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::helvetica_bold_oblique() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn helvetica_bold_oblique(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::HelveticaBoldOblique)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Courier" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::courier()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::courier() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn courier(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::Courier)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Courier-Bold" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::courier_bold()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::courier_bold() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn courier_bold(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::CourierBold)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Courier-Oblique" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::courier_oblique()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::courier_oblique() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn courier_oblique(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::CourierOblique)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Courier-BoldOblique" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::courier_bold_oblique()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::courier_bold_oblique() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn courier_bold_oblique(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::CourierBoldOblique)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "Symbol" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::symbol()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::symbol() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn symbol(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::Symbol)
-    }
-
-    /// Creates a new [PdfFont] for the built-in "ZapfDingbats" font.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::zapf_dingbats()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::zapf_dingbats() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn zapf_dingbats(document: &'a PdfDocument<'a>) -> PdfFont<'a> {
-        #[allow(deprecated)]
-        Self::new_built_in(document, PdfFontBuiltin::ZapfDingbats)
-    }
-
-    /// Attempts to load a Type 1 font file from the given file path.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is not available when compiling to WASM. You have several options for
-    /// loading font data in WASM:
-    /// * Use the [PdfFonts::load_type1_from_fetch()] function to download font data from a
-    /// URL using the browser's built-in `fetch()` API. This function is only available when
-    /// compiling to WASM.
-    /// * Use the [PdfFonts::load_type1_from_blob()] function to load font data from a
-    /// Javascript File or Blob object (such as a File object returned from an HTML
-    /// `<input type="file">` element). This function is only available when compiling to WASM.
-    /// * Use the [PdfFonts::load_type1_from_reader()] function to load font data from any
-    /// valid Rust reader.
-    /// * Use another method to retrieve the bytes of the target font over the network,
-    /// then load those bytes into Pdfium using the [PdfFonts::new_type1_from_bytes()] function.
-    /// * Embed the bytes of the desired font directly into the compiled WASM module
-    /// using the `include_bytes!()` macro.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_type1_from_file()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_type1_from_file() function instead."
-    )]
-    #[doc(hidden)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_type1_from_file(
-        document: &'a PdfDocument<'a>,
-        path: &(impl AsRef<Path> + ?Sized),
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        #[allow(deprecated)]
-        Self::load_type1_from_reader(
-            document,
-            File::open(path).map_err(PdfiumError::IoError)?,
-            is_cid_font,
-        )
-    }
-
-    /// Attempts to load a Type 1 font file from the given reader.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_type1_from_reader()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_type1_from_reader() function instead."
-    )]
-    #[doc(hidden)]
-    pub fn load_type1_from_reader(
-        document: &'a PdfDocument<'a>,
-        mut reader: impl Read,
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        let mut bytes = Vec::new();
-
-        reader
-            .read_to_end(&mut bytes)
-            .map_err(PdfiumError::IoError)?;
-
-        #[allow(deprecated)]
-        Self::new_type1_from_bytes(document, bytes.as_slice(), is_cid_font)
-    }
-
-    /// Attempts to load a Type 1 font file from the given URL.
-    /// The Javascript `fetch()` API is used to download data over the network.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is only available when compiling to WASM.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_type1_from_fetch()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_type1_from_fetch() function instead."
-    )]
-    #[doc(hidden)]
-    #[cfg(any(doc, target_arch = "wasm32"))]
-    pub async fn load_type1_from_fetch(
-        document: &'a PdfDocument<'a>,
-        url: impl ToString,
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        if let Some(window) = window() {
-            let fetch_result = JsFuture::from(window.fetch_with_str(url.to_string().as_str()))
-                .await
-                .map_err(PdfiumError::WebSysFetchError)?;
-
-            debug_assert!(fetch_result.is_instance_of::<Response>());
-
-            let response: Response = fetch_result
-                .dyn_into()
-                .map_err(|_| PdfiumError::WebSysInvalidResponseError)?;
-
-            let blob: Blob =
-                JsFuture::from(response.blob().map_err(PdfiumError::WebSysFetchError)?)
-                    .await
-                    .map_err(PdfiumError::WebSysFetchError)?
-                    .into();
-
-            #[allow(deprecated)]
-            Self::load_type1_from_blob(document, blob, is_cid_font).await
-        } else {
-            Err(PdfiumError::WebSysWindowObjectNotAvailable)
-        }
-    }
-
-    /// Attempts to load a Type 1 font from the given Blob.
-    /// A File object returned from a FileList is a suitable Blob:
-    ///
-    /// ```text
-    /// <input id="filePicker" type="file">
-    ///
-    /// const file = document.getElementById('filePicker').files[0];
-    /// ```
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is only available when compiling to WASM.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_type1_from_blob()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_type1_from_blob() function instead."
-    )]
-    #[doc(hidden)]
-    #[cfg(any(doc, target_arch = "wasm32"))]
-    pub async fn load_type1_from_blob(
-        document: &'a PdfDocument<'a>,
-        blob: Blob,
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        let array_buffer: ArrayBuffer = JsFuture::from(blob.array_buffer())
-            .await
-            .map_err(PdfiumError::WebSysFetchError)?
-            .into();
-
-        let u8_array: Uint8Array = Uint8Array::new(&array_buffer);
-
-        let bytes: Vec<u8> = u8_array.to_vec();
-
-        #[allow(deprecated)]
-        Self::new_type1_from_bytes(document, bytes.as_slice(), is_cid_font)
-    }
-
-    /// Attempts to load the given byte data as a Type 1 font file.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_type1_from_bytes()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_type1_from_bytes() function instead."
-    )]
-    #[doc(hidden)]
-    pub fn new_type1_from_bytes(
-        document: &'a PdfDocument<'a>,
-        font_data: &[u8],
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        Self::new_font_from_bytes(document, font_data, FPDF_FONT_TYPE1, is_cid_font)
-    }
-
-    /// Attempts to load a TrueType font file from the given file path.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is not available when compiling to WASM. You have several options for
-    /// loading font data in WASM:
-    /// * Use the [PdfFonts::load_true_type_from_fetch()] function to download font data from a
-    /// URL using the browser's built-in `fetch()` API. This function is only available when
-    /// compiling to WASM.
-    /// * Use the [PdfFonts::load_true_type_from_blob()] function to load font data from a
-    /// Javascript `File` or `Blob` object (such as a `File` object returned from an HTML
-    /// `<input type="file">` element). This function is only available when compiling to WASM.
-    /// * Use the [PdfFonts::load_true_type_from_reader()] function to load font data from any
-    /// valid Rust reader.
-    /// * Use another method to retrieve the bytes of the target font over the network,
-    /// then load those bytes into Pdfium using the [PdfFonts::new_true_type_from_bytes()] function.
-    /// * Embed the bytes of the desired font directly into the compiled WASM module
-    /// using the `include_bytes!()` macro.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_true_type_from_file()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_true_type_from_file() function instead."
-    )]
-    #[doc(hidden)]
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_true_type_from_file(
-        document: &'a PdfDocument<'a>,
-        path: &(impl AsRef<Path> + ?Sized),
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        #[allow(deprecated)]
-        Self::load_true_type_from_reader(
-            document,
-            File::open(path).map_err(PdfiumError::IoError)?,
-            is_cid_font,
-        )
-    }
-
-    /// Attempts to load a TrueType font file from the given reader.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_true_type_from_reader()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_true_type_from_reader() function instead."
-    )]
-    #[doc(hidden)]
-    pub fn load_true_type_from_reader(
-        document: &'a PdfDocument<'a>,
-        mut reader: impl Read,
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        let mut bytes = Vec::new();
-
-        reader
-            .read_to_end(&mut bytes)
-            .map_err(PdfiumError::IoError)?;
-
-        #[allow(deprecated)]
-        Self::new_true_type_from_bytes(document, bytes.as_slice(), is_cid_font)
-    }
-
-    /// Attempts to load a TrueType font file from the given URL.
-    /// The Javascript `fetch()` API is used to download data over the network.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is only available when compiling to WASM.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_true_type_from_fetch()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_true_type_from_fetch() function instead."
-    )]
-    #[doc(hidden)]
-    #[cfg(any(doc, target_arch = "wasm32"))]
-    pub async fn load_true_type_from_fetch(
-        document: &'a PdfDocument<'a>,
-        url: impl ToString,
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        if let Some(window) = window() {
-            let fetch_result = JsFuture::from(window.fetch_with_str(url.to_string().as_str()))
-                .await
-                .map_err(PdfiumError::WebSysFetchError)?;
-
-            debug_assert!(fetch_result.is_instance_of::<Response>());
-
-            let response: Response = fetch_result
-                .dyn_into()
-                .map_err(|_| PdfiumError::WebSysInvalidResponseError)?;
-
-            let blob: Blob =
-                JsFuture::from(response.blob().map_err(PdfiumError::WebSysFetchError)?)
-                    .await
-                    .map_err(PdfiumError::WebSysFetchError)?
-                    .into();
-
-            #[allow(deprecated)]
-            Self::load_true_type_from_blob(document, blob, is_cid_font).await
-        } else {
-            Err(PdfiumError::WebSysWindowObjectNotAvailable)
-        }
-    }
-
-    /// Attempts to load a TrueType font from the given `Blob`.
-    /// A `File` object returned from a `FileList` is a suitable `Blob`:
-    ///
-    /// ```text
-    /// <input id="filePicker" type="file">
-    ///
-    /// const file = document.getElementById('filePicker').files[0];
-    /// ```
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is only available when compiling to WASM.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_true_type_from_blob()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_true_type_from_blob() function instead."
-    )]
-    #[doc(hidden)]
-    #[cfg(any(doc, target_arch = "wasm32"))]
-    pub async fn load_true_type_from_blob(
-        document: &'a PdfDocument<'a>,
-        blob: Blob,
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        let array_buffer: ArrayBuffer = JsFuture::from(blob.array_buffer())
-            .await
-            .map_err(PdfiumError::WebSysFetchError)?
-            .into();
-
-        let u8_array: Uint8Array = Uint8Array::new(&array_buffer);
-
-        let bytes: Vec<u8> = u8_array.to_vec();
-
-        #[allow(deprecated)]
-        Self::new_true_type_from_bytes(document, bytes.as_slice(), is_cid_font)
-    }
-
-    /// Attempts to load the given byte data as a TrueType font file.
-    ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
-    /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
-    /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
-    /// or right-to-left languages.
-    ///
-    /// This function is now deprecated and will be removed in release 0.9.0.
-    /// Use the `PdfFonts::load_true_type_from_bytes()` function instead.
-    #[deprecated(
-        since = "0.8.1",
-        note = "This function has been moved. Use the PdfFonts::load_true_type_from_bytes() function instead."
-    )]
-    #[doc(hidden)]
-    pub fn new_true_type_from_bytes(
-        document: &'a PdfDocument<'a>,
-        font_data: &[u8],
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        Self::new_font_from_bytes(document, font_data, FPDF_FONT_TRUETYPE, is_cid_font)
-    }
-
-    #[inline]
-    pub(crate) fn new_font_from_bytes(
-        document: &'a PdfDocument<'a>,
-        font_data: &[u8],
-        font_type: c_uint,
-        is_cid_font: bool,
-    ) -> Result<PdfFont<'a>, PdfiumError> {
-        let handle = document.bindings().FPDFText_LoadFont(
-            document.handle(),
-            font_data.as_ptr(),
-            font_data.len() as c_uint,
-            font_type as c_int,
-            document.bindings().bool_to_pdfium(is_cid_font),
-        );
-
-        if handle.is_null() {
-            Err(PdfiumError::PdfiumLibraryInternalError(
-                PdfiumInternalError::Unknown,
-            ))
-        } else {
-            Ok(PdfFont::from_pdfium(
-                handle,
-                document.bindings(),
-                None,
-                true,
-            ))
+            lifetime: PhantomData,
         }
     }
 
@@ -752,61 +174,58 @@ impl<'a> PdfFont<'a> {
         self.handle
     }
 
-    /// Returns the [PdfiumLibraryBindings] used by this [PdfFont].
-    #[inline]
-    pub fn bindings(&self) -> &'a dyn PdfiumLibraryBindings {
-        self.bindings
-    }
-
-    #[inline]
-    #[deprecated(
-        since = "0.8.22",
-        note = "This function has been renamed in line with upstream Pdfium. Use the PdfFont::family() function instead."
-    )]
+    #[cfg(any(
+        feature = "pdfium_future",
+        feature = "pdfium_7881",
+        feature = "pdfium_7763",
+        feature = "pdfium_7543",
+        feature = "pdfium_7350",
+        feature = "pdfium_7215",
+        feature = "pdfium_7123",
+        feature = "pdfium_6996",
+        feature = "pdfium_6721",
+        feature = "pdfium_6666"
+    ))]
     /// Returns the name of this [PdfFont].
     pub fn name(&self) -> String {
-        self.family()
+        // Retrieving the font name from Pdfium is a two-step operation. First, we call
+        // FPDFFont_GetBaseFontName() with a null buffer; this will retrieve the length of
+        // the font name in bytes. If the length is zero, then there is no font name.
+
+        // If the length is non-zero, then we reserve a byte buffer of the given
+        // length and call FPDFFont_GetBaseFontName() again with a pointer to the buffer;
+        // this will write the font name into the buffer. Unlike most text handling in
+        // Pdfium, font names are returned in UTF-8 format.
+
+        let buffer_length = unsafe {
+            self.bindings()
+                .FPDFFont_GetBaseFontName(self.handle, std::ptr::null_mut(), 0)
+        };
+
+        if buffer_length == 0 {
+            // The font name is not present.
+
+            return String::new();
+        }
+
+        let mut buffer = create_byte_buffer(buffer_length as usize);
+
+        let result = unsafe {
+            self.bindings().FPDFFont_GetBaseFontName(
+                self.handle,
+                buffer.as_mut_ptr() as *mut c_char,
+                buffer_length,
+            )
+        };
+
+        assert_eq!(result, buffer_length);
+
+        String::from_utf8(buffer)
+            // Trim any trailing nulls. All strings returned from Pdfium are generally terminated
+            // by one null byte.
+            .map(|str| str.trim_end_matches(char::from(0)).to_owned())
+            .unwrap_or_else(|_| String::new())
     }
-
-    // TODO: AJRC - 4-Aug-2024 - FPDFFont_GetBaseFontName() is in Pdfium export headers
-    // but changes not yet released. Tracking issue: https://github.com/ajrcarey/pdfium-render/issues/152
-    /// Returns the name of this [PdfFont].
-    // pub fn name(&self) -> String {
-    //     // Retrieving the font name from Pdfium is a two-step operation. First, we call
-    //     // FPDFFont_GetBaseFontName() with a null buffer; this will retrieve the length of
-    //     // the font name in bytes. If the length is zero, then there is no font name.
-
-    //     // If the length is non-zero, then we reserve a byte buffer of the given
-    //     // length and call FPDFFont_GetBaseFontName() again with a pointer to the buffer;
-    //     // this will write the font name into the buffer. Unlike most text handling in
-    //     // Pdfium, font names are returned in UTF-8 format.
-
-    //     let buffer_length =
-    //         self.bindings
-    //             .FPDFFont_GetBaseFontName(self.handle, std::ptr::null_mut(), 0);
-
-    //     if buffer_length == 0 {
-    //         // The font name is not present.
-
-    //         return String::new();
-    //     }
-
-    //     let mut buffer = create_byte_buffer(buffer_length as usize);
-
-    //     let result = self.bindings.FPDFFont_GetBaseFontName(
-    //         self.handle,
-    //         buffer.as_mut_ptr() as *mut c_char,
-    //         buffer_length,
-    //     );
-
-    //     assert_eq!(result, buffer_length);
-
-    //     String::from_utf8(buffer)
-    //         // Trim any trailing nulls. All strings returned from Pdfium are generally terminated
-    //         // by one null byte.
-    //         .map(|str| str.trim_end_matches(char::from(0)).to_owned())
-    //         .unwrap_or_else(|_| String::new())
-    // }
 
     /// Returns the family of this [PdfFont].
     pub fn family(&self) -> String {
@@ -819,10 +238,23 @@ impl<'a> PdfFont<'a> {
         // this will write the font name into the buffer. Unlike most text handling in
         // Pdfium, font names are returned in UTF-8 format.
 
-        #[cfg(any(feature = "pdfium_future", feature = "pdfium_6611"))]
-        let buffer_length =
-            self.bindings
-                .FPDFFont_GetFamilyName(self.handle, std::ptr::null_mut(), 0);
+        #[cfg(any(
+            feature = "pdfium_future",
+            feature = "pdfium_7881",
+            feature = "pdfium_7763",
+            feature = "pdfium_7543",
+            feature = "pdfium_7350",
+            feature = "pdfium_7215",
+            feature = "pdfium_7123",
+            feature = "pdfium_6996",
+            feature = "pdfium_6721",
+            feature = "pdfium_6666",
+            feature = "pdfium_6611"
+        ))]
+        let buffer_length = unsafe {
+            self.bindings()
+                .FPDFFont_GetFamilyName(self.handle, std::ptr::null_mut(), 0)
+        };
 
         #[cfg(any(
             feature = "pdfium_6569",
@@ -840,9 +272,10 @@ impl<'a> PdfFont<'a> {
             feature = "pdfium_6015",
             feature = "pdfium_5961"
         ))]
-        let buffer_length =
-            self.bindings
-                .FPDFFont_GetFontName(self.handle, std::ptr::null_mut(), 0);
+        let buffer_length = unsafe {
+            self.bindings()
+                .FPDFFont_GetFontName(self.handle, std::ptr::null_mut(), 0)
+        };
 
         if buffer_length == 0 {
             // The font name is not present.
@@ -852,12 +285,26 @@ impl<'a> PdfFont<'a> {
 
         let mut buffer = create_byte_buffer(buffer_length as usize);
 
-        #[cfg(any(feature = "pdfium_future", feature = "pdfium_6611"))]
-        let result = self.bindings.FPDFFont_GetFamilyName(
-            self.handle,
-            buffer.as_mut_ptr() as *mut c_char,
-            buffer_length,
-        );
+        #[cfg(any(
+            feature = "pdfium_future",
+            feature = "pdfium_7881",
+            feature = "pdfium_7763",
+            feature = "pdfium_7543",
+            feature = "pdfium_7350",
+            feature = "pdfium_7215",
+            feature = "pdfium_7123",
+            feature = "pdfium_6996",
+            feature = "pdfium_6721",
+            feature = "pdfium_6666",
+            feature = "pdfium_6611"
+        ))]
+        let result = unsafe {
+            self.bindings().FPDFFont_GetFamilyName(
+                self.handle,
+                buffer.as_mut_ptr() as *mut c_char,
+                buffer_length,
+            )
+        };
 
         #[cfg(any(
             feature = "pdfium_6569",
@@ -875,11 +322,13 @@ impl<'a> PdfFont<'a> {
             feature = "pdfium_6015",
             feature = "pdfium_5961"
         ))]
-        let result = self.bindings.FPDFFont_GetFontName(
-            self.handle,
-            buffer.as_mut_ptr() as *mut c_char,
-            buffer_length,
-        );
+        let result = unsafe {
+            self.bindings().FPDFFont_GetFontName(
+                self.handle,
+                buffer.as_mut_ptr() as *mut c_char,
+                buffer_length,
+            )
+        };
 
         assert_eq!(result, buffer_length);
 
@@ -894,9 +343,10 @@ impl<'a> PdfFont<'a> {
     ///
     /// Pdfium may not reliably return the correct value of this property for built-in fonts.
     pub fn weight(&self) -> Result<PdfFontWeight, PdfiumError> {
-        PdfFontWeight::from_pdfium(self.bindings.FPDFFont_GetWeight(self.handle)).ok_or(
-            PdfiumError::PdfiumLibraryInternalError(PdfiumInternalError::Unknown),
-        )
+        PdfFontWeight::from_pdfium(unsafe { self.bindings().FPDFFont_GetWeight(self.handle) })
+            .ok_or(PdfiumError::PdfiumLibraryInternalError(
+                PdfiumInternalError::Unknown,
+            ))
     }
 
     /// Returns the italic angle of this [PdfFont]. The italic angle is the angle,
@@ -908,10 +358,10 @@ impl<'a> PdfFont<'a> {
     pub fn italic_angle(&self) -> Result<i32, PdfiumError> {
         let mut angle = 0;
 
-        if self.bindings.is_true(
-            self.bindings
-                .FPDFFont_GetItalicAngle(self.handle, &mut angle),
-        ) {
+        if self.bindings().is_true(unsafe {
+            self.bindings()
+                .FPDFFont_GetItalicAngle(self.handle, &mut angle)
+        }) {
             Ok(angle)
         } else {
             Err(PdfiumError::PdfiumLibraryInternalError(
@@ -926,11 +376,10 @@ impl<'a> PdfFont<'a> {
     pub fn ascent(&self, font_size: PdfPoints) -> Result<PdfPoints, PdfiumError> {
         let mut ascent = 0.0;
 
-        if self.bindings.is_true(self.bindings.FPDFFont_GetAscent(
-            self.handle,
-            font_size.value,
-            &mut ascent,
-        )) {
+        if self.bindings().is_true(unsafe {
+            self.bindings()
+                .FPDFFont_GetAscent(self.handle, font_size.value, &mut ascent)
+        }) {
             Ok(PdfPoints::new(ascent))
         } else {
             Err(PdfiumError::PdfiumLibraryInternalError(
@@ -945,11 +394,10 @@ impl<'a> PdfFont<'a> {
     pub fn descent(&self, font_size: PdfPoints) -> Result<PdfPoints, PdfiumError> {
         let mut descent = 0.0;
 
-        if self.bindings.is_true(self.bindings.FPDFFont_GetDescent(
-            self.handle,
-            font_size.value,
-            &mut descent,
-        )) {
+        if self.bindings().is_true(unsafe {
+            self.bindings()
+                .FPDFFont_GetDescent(self.handle, font_size.value, &mut descent)
+        }) {
             Ok(PdfPoints::new(descent))
         } else {
             Err(PdfiumError::PdfiumLibraryInternalError(
@@ -961,9 +409,9 @@ impl<'a> PdfFont<'a> {
     /// Returns the raw font descriptor bitflags for the containing [PdfFont].
     #[inline]
     fn get_flags_bits(&self) -> FpdfFontDescriptorFlags {
-        FpdfFontDescriptorFlags::from_bits_truncate(
-            self.bindings.FPDFFont_GetFlags(self.handle) as u32
-        )
+        FpdfFontDescriptorFlags::from_bits_truncate(unsafe {
+            self.bindings().FPDFFont_GetFlags(self.handle)
+        } as u32)
     }
 
     /// Returns `true` if all the glyphs in this [PdfFont] have the same width.
@@ -1100,7 +548,7 @@ impl<'a> PdfFont<'a> {
 
     /// Returns `true` if the data for this [PdfFont] is embedded in the containing [PdfDocument].
     pub fn is_embedded(&self) -> Result<bool, PdfiumError> {
-        let result = self.bindings.FPDFFont_GetIsEmbedded(self.handle);
+        let result = unsafe { self.bindings().FPDFFont_GetIsEmbedded(self.handle) };
 
         match result {
             1 => Ok(true),
@@ -1127,29 +575,30 @@ impl<'a> PdfFont<'a> {
 
         let mut out_buflen: usize = 0;
 
-        if self
-            .bindings()
-            .is_true(self.bindings().FPDFFont_GetFontData(
+        if self.bindings().is_true(unsafe {
+            self.bindings().FPDFFont_GetFontData(
                 self.handle,
                 std::ptr::null_mut(),
                 0,
                 &mut out_buflen,
-            ))
-        {
+            )
+        }) {
             // out_buflen now contains the length of the font data.
 
             let buffer_length = out_buflen;
 
-            let mut buffer = create_byte_buffer(buffer_length as usize);
+            let mut buffer = create_byte_buffer(buffer_length);
 
-            let result = self.bindings().FPDFFont_GetFontData(
-                self.handle,
-                buffer.as_mut_ptr(),
-                buffer_length,
-                &mut out_buflen,
-            );
+            let result = unsafe {
+                self.bindings().FPDFFont_GetFontData(
+                    self.handle,
+                    buffer.as_mut_ptr(),
+                    buffer_length,
+                    &mut out_buflen,
+                )
+            };
 
-            assert!(self.bindings.is_true(result));
+            assert!(self.bindings().is_true(result));
             assert_eq!(buffer_length, out_buflen);
 
             Ok(buffer)
@@ -1167,7 +616,7 @@ impl<'a> PdfFont<'a> {
     /// not the entire font glyphset. This is a PDF feature known as font subsetting. The collection
     /// of glyphs returned by this function may therefore not cover the entire font glyphset.
     #[inline]
-    pub fn glyphs(&self) -> &PdfFontGlyphs {
+    pub fn glyphs(&self) -> &PdfFontGlyphs<'_> {
         self.glyphs.initialize_len();
         &self.glyphs
     }
@@ -1189,7 +638,17 @@ impl<'a> Drop for PdfFont<'a> {
         // (Indeed, if we try to, Pdfium segfaults.)
 
         if self.is_font_memory_loaded {
-            self.bindings.FPDFFont_Close(self.handle);
+            unsafe {
+                self.bindings().FPDFFont_Close(self.handle);
+            }
         }
     }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfFont<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfFont<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfFont<'a> {}

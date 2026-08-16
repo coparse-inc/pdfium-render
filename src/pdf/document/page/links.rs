@@ -2,40 +2,33 @@
 //! links contained within a single `PdfPage`.
 
 use crate::bindgen::{FPDF_DOCUMENT, FPDF_PAGE};
-use crate::bindings::PdfiumLibraryBindings;
 use crate::error::PdfiumError;
 use crate::pdf::link::PdfLink;
 use crate::pdf::points::PdfPoints;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
+use std::marker::PhantomData;
 use std::ops::{Range, RangeInclusive};
 use std::os::raw::c_int;
 use std::ptr::null_mut;
 
+/// The zero-based index of a single [PdfLink] inside its containing [PdfPageLinks] collection.
 pub type PdfPageLinkIndex = usize;
 
+/// The links contained within a single `PdfPage`.
 pub struct PdfPageLinks<'a> {
     page_handle: FPDF_PAGE,
     document_handle: FPDF_DOCUMENT,
-    bindings: &'a dyn PdfiumLibraryBindings,
+    lifetime: PhantomData<&'a FPDF_PAGE>,
 }
 
 impl<'a> PdfPageLinks<'a> {
     #[inline]
-    pub(crate) fn from_pdfium(
-        page_handle: FPDF_PAGE,
-        document_handle: FPDF_DOCUMENT,
-        bindings: &'a dyn PdfiumLibraryBindings,
-    ) -> Self {
+    pub(crate) fn from_pdfium(page_handle: FPDF_PAGE, document_handle: FPDF_DOCUMENT) -> Self {
         PdfPageLinks {
             page_handle,
             document_handle,
-            bindings,
+            lifetime: PhantomData,
         }
-    }
-
-    /// Returns the [PdfiumLibraryBindings] used by this [PdfPageLinks] collection.
-    #[inline]
-    pub fn bindings(&self) -> &dyn PdfiumLibraryBindings {
-        self.bindings
     }
 
     /// Returns the number of links in this [PdfPageLinks] collection.
@@ -124,17 +117,12 @@ impl<'a> PdfPageLinks<'a> {
 
         let mut handle = null_mut();
 
-        if self.bindings.is_true(self.bindings.FPDFLink_Enumerate(
-            self.page_handle,
-            &mut start_pos,
-            &mut handle,
-        )) && !handle.is_null()
+        if self.bindings().is_true(unsafe {
+            self.bindings()
+                .FPDFLink_Enumerate(self.page_handle, &mut start_pos, &mut handle)
+        }) && !handle.is_null()
         {
-            Ok(PdfLink::from_pdfium(
-                handle,
-                self.document_handle,
-                self.bindings,
-            ))
+            Ok(PdfLink::from_pdfium(handle, self.document_handle))
         } else {
             Err(PdfiumError::LinkIndexOutOfBounds)
         }
@@ -155,28 +143,36 @@ impl<'a> PdfPageLinks<'a> {
     }
 
     /// Returns the [PdfLink] object at the given position on the containing page, if any.
-    pub fn link_at_point(&self, x: PdfPoints, y: PdfPoints) -> Option<PdfLink> {
-        let handle =
-            self.bindings
-                .FPDFLink_GetLinkAtPoint(self.page_handle, x.value as f64, y.value as f64);
+    pub fn link_at_point(&self, x: PdfPoints, y: PdfPoints) -> Option<PdfLink<'_>> {
+        let handle = unsafe {
+            self.bindings().FPDFLink_GetLinkAtPoint(
+                self.page_handle,
+                x.value as f64,
+                y.value as f64,
+            )
+        };
 
         if handle.is_null() {
             None
         } else {
-            Some(PdfLink::from_pdfium(
-                handle,
-                self.document_handle,
-                self.bindings,
-            ))
+            Some(PdfLink::from_pdfium(handle, self.document_handle))
         }
     }
 
     /// Returns an iterator over all the [PdfLink] objects in this [PdfPageLinks] collection.
     #[inline]
-    pub fn iter(&self) -> PdfPageLinksIterator {
+    pub fn iter(&self) -> PdfPageLinksIterator<'_> {
         PdfPageLinksIterator::new(self)
     }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfPageLinks<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfPageLinks<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfPageLinks<'a> {}
 
 /// An iterator over all the [PdfLink] objects in a [PdfPageLinksIterator] collection.
 pub struct PdfPageLinksIterator<'a> {

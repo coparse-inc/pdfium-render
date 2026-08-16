@@ -16,6 +16,8 @@ use {
     crate::pdf::document::page::PdfPage,
 };
 
+/// The zero-based index of a single [PdfPageTextSegment] inside its containing
+/// [PdfPageTextSegments] collection.
 pub type PdfPageTextSegmentIndex = usize;
 
 /// A collection of all the distinct rectangular areas of a single [PdfPage] occupied by
@@ -55,9 +57,13 @@ impl<'a> PdfPageTextSegments<'a> {
     /// the page may be much larger than the number of text segments.
     #[inline]
     pub fn len(&self) -> PdfPageTextSegmentIndex {
-        self.bindings
-            .FPDFText_CountRects(*self.text.handle(), self.start, self.characters)
-            as PdfPageTextSegmentIndex
+        (unsafe {
+            self.bindings.FPDFText_CountRects(
+                self.text.text_page_handle(),
+                self.start,
+                self.characters,
+            )
+        }) as PdfPageTextSegmentIndex
     }
 
     /// Returns `true` if this [PdfPageTextSegments] collection is empty.
@@ -85,27 +91,29 @@ impl<'a> PdfPageTextSegments<'a> {
 
     /// Returns a single [PdfPageTextSegment] from this [PdfPageTextSegments] collection.
     #[inline]
-    pub fn get(&self, index: PdfPageTextSegmentIndex) -> Result<PdfPageTextSegment, PdfiumError> {
+    pub fn get<'b>(
+        &'b self,
+        index: PdfPageTextSegmentIndex,
+    ) -> Result<PdfPageTextSegment<'a>, PdfiumError> {
         if index >= self.len() {
             return Err(PdfiumError::TextSegmentIndexOutOfBounds);
         }
 
         let mut left = 0.0;
-
         let mut bottom = 0.0;
-
         let mut right = 0.0;
-
         let mut top = 0.0;
 
-        let result = self.bindings.FPDFText_GetRect(
-            *self.text.handle(),
-            index as c_int,
-            &mut left,
-            &mut top,
-            &mut right,
-            &mut bottom,
-        );
+        let result = unsafe {
+            self.bindings.FPDFText_GetRect(
+                self.text.text_page_handle(),
+                index as c_int,
+                &mut left,
+                &mut top,
+                &mut right,
+                &mut bottom,
+            )
+        };
 
         PdfRect::from_pdfium_as_result(
             result,
@@ -120,6 +128,26 @@ impl<'a> PdfPageTextSegments<'a> {
         .map(|rect| PdfPageTextSegment::from_pdfium(self.text, rect))
     }
 
+    /// Returns the first [PdfPageTextSegment] in this [PdfPageTextSegments] collection.
+    #[inline]
+    pub fn first(&self) -> Result<PdfPageTextSegment<'a>, PdfiumError> {
+        if !self.is_empty() {
+            self.get(0)
+        } else {
+            Err(PdfiumError::NoTextSegmentsInPageText)
+        }
+    }
+
+    /// Returns the last [PdfPageTextSegment] in this [PdfPageTextSegments] collection.
+    #[inline]
+    pub fn last(&self) -> Result<PdfPageTextSegment<'a>, PdfiumError> {
+        if !self.is_empty() {
+            self.get(self.len() - 1)
+        } else {
+            Err(PdfiumError::NoTextSegmentsInPageText)
+        }
+    }
+
     /// Returns an iterator over all the text segments in this [PdfPageTextSegments] collection.
     ///
     /// Pdfium automatically merges smaller text boxes into larger text segments if all
@@ -127,7 +155,7 @@ impl<'a> PdfPageTextSegments<'a> {
     /// individual [PdfPageTextObject] objects on the page may be much larger than the number of
     /// text segments.
     #[inline]
-    pub fn iter(&self) -> PdfPageTextSegmentsIterator {
+    pub fn iter(&self) -> PdfPageTextSegmentsIterator<'_> {
         PdfPageTextSegmentsIterator::new(self)
     }
 }

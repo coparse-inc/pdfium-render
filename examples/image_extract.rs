@@ -1,4 +1,4 @@
-use image::ImageFormat;
+use image_025::ImageFormat;
 use pdfium_render::prelude::*;
 
 pub fn main() -> Result<(), PdfiumError> {
@@ -23,6 +23,7 @@ pub fn main() -> Result<(), PdfiumError> {
                             println!("Exporting image with object index {} to file", object_index);
 
                             assert!(image
+                                .into_rgb8()
                                 .save_with_format(
                                     format!(
                                         "image-test-page-{}-image-{}.jpg",

@@ -38,7 +38,7 @@ pub fn main() -> Result<(), PdfiumError> {
         .pages()
         .first()?
         .render(300, 450, None)?
-        .as_image();
+        .as_image()?;
 
     let _image_object = page.objects_mut().create_image_object(
         PdfPoints::new(400.0),
@@ -102,7 +102,7 @@ pub fn main() -> Result<(), PdfiumError> {
     link_annotation.set_height(PdfPoints::new(50.0))?;
     link_annotation
         .attachment_points_mut()
-        .create_attachment_point_at_end(PdfQuadPoints::from_rect(PdfRect::new_from_values(
+        .create_attachment_point_at_end(PdfQuadPoints::from_rect(&PdfRect::new_from_values(
             100.0, 100.0, 150.0, 150.0,
         )))?;
 

@@ -1,3 +1,4 @@
+use image_025::ImageFormat;
 use pdfium_render::prelude::*;
 
 fn main() -> Result<(), PdfiumError> {
@@ -32,10 +33,10 @@ fn main() -> Result<(), PdfiumError> {
                 let config = PdfRenderConfig::new().set_target_width(2000);
 
                 let (clip_left, clip_top) =
-                    page.points_to_pixels(bounds.left, bounds.top, &config)?;
+                    page.points_to_pixels(bounds.left(), bounds.top(), &config)?;
 
                 let (clip_right, clip_bottom) =
-                    page.points_to_pixels(bounds.right, bounds.bottom, &config)?;
+                    page.points_to_pixels(bounds.right(), bounds.bottom(), &config)?;
 
                 // Render the portion of the page within the clipping rectangle...
 
@@ -50,7 +51,7 @@ fn main() -> Result<(), PdfiumError> {
                 // the clipping rectangle.
 
                 bitmap
-                    .as_image()
+                    .as_image()?
                     .crop(
                         // Crop the output image to the clipping rectangle.
                         clip_left as u32,
@@ -64,7 +65,7 @@ fn main() -> Result<(), PdfiumError> {
                             "export-clip-crop-test-{}-{}.jpg",
                             page_index, annotation_index
                         ),
-                        image::ImageFormat::Jpeg,
+                        ImageFormat::Jpeg,
                     )
                     .map_err(|_| PdfiumError::ImageError)?;
             }

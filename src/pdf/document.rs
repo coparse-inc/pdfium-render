@@ -5,6 +5,7 @@ pub mod attachment;
 pub mod attachments;
 pub mod bookmark;
 pub mod bookmarks;
+pub mod catalog;
 pub mod fonts;
 pub mod form;
 pub mod metadata;
@@ -15,17 +16,18 @@ pub mod signature;
 pub mod signatures;
 
 use crate::bindgen::FPDF_DOCUMENT;
-use crate::bindings::PdfiumLibraryBindings;
 use crate::error::PdfiumError;
 use crate::error::PdfiumInternalError;
 use crate::pdf::document::attachments::PdfAttachments;
 use crate::pdf::document::bookmarks::PdfBookmarks;
+use crate::pdf::document::catalog::PdfCatalog;
 use crate::pdf::document::fonts::PdfFonts;
 use crate::pdf::document::form::PdfForm;
 use crate::pdf::document::metadata::PdfMetadata;
 use crate::pdf::document::pages::PdfPages;
 use crate::pdf::document::permissions::PdfPermissions;
 use crate::pdf::document::signatures::PdfSignatures;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use crate::utils::files::get_pdfium_file_writer_from_writer;
 use crate::utils::files::FpdfFileAccessExt;
 use std::fmt::{Debug, Formatter};
@@ -35,6 +37,7 @@ use std::io::Write;
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 
+use std::marker::PhantomData;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
@@ -157,45 +160,44 @@ pub struct PdfDocument<'a> {
     output_version: Option<PdfDocumentVersion>,
     attachments: PdfAttachments<'a>,
     bookmarks: PdfBookmarks<'a>,
+    catalog: PdfCatalog<'a>,
     form: Option<PdfForm<'a>>,
     fonts: PdfFonts<'a>,
     metadata: PdfMetadata<'a>,
     pages: PdfPages<'a>,
     permissions: PdfPermissions<'a>,
     signatures: PdfSignatures<'a>,
-    bindings: &'a dyn PdfiumLibraryBindings,
     source_byte_buffer: Option<Vec<u8>>,
 
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     // This field is never used when compiling to WASM.
     file_access_reader: Option<Box<FpdfFileAccessExt<'a>>>,
+
+    lifetime: PhantomData<&'a FPDF_DOCUMENT>,
 }
 
 impl<'a> PdfDocument<'a> {
     #[inline]
-    pub(crate) fn from_pdfium(
-        handle: FPDF_DOCUMENT,
-        bindings: &'a dyn PdfiumLibraryBindings,
-    ) -> Self {
-        let form = PdfForm::from_pdfium(handle, bindings);
+    pub(crate) fn from_pdfium(handle: FPDF_DOCUMENT) -> Self {
+        let form = PdfForm::from_pdfium(handle);
 
-        let pages =
-            PdfPages::from_pdfium(handle, form.as_ref().map(|form| form.handle()), bindings);
+        let pages = PdfPages::from_pdfium(handle, form.as_ref().map(|form| form.handle()));
 
         PdfDocument {
             handle,
             output_version: None,
-            attachments: PdfAttachments::from_pdfium(handle, bindings),
-            bookmarks: PdfBookmarks::from_pdfium(handle, bindings),
+            attachments: PdfAttachments::from_pdfium(handle),
+            bookmarks: PdfBookmarks::from_pdfium(handle),
+            catalog: PdfCatalog::from_pdfium(handle),
             form,
-            fonts: PdfFonts::from_pdfium(handle, bindings),
-            metadata: PdfMetadata::from_pdfium(handle, bindings),
+            fonts: PdfFonts::from_pdfium(handle),
+            metadata: PdfMetadata::from_pdfium(handle),
             pages,
-            permissions: PdfPermissions::from_pdfium(handle, bindings),
-            signatures: PdfSignatures::from_pdfium(handle, bindings),
-            bindings,
+            permissions: PdfPermissions::from_pdfium(handle),
+            signatures: PdfSignatures::from_pdfium(handle),
             source_byte_buffer: None,
             file_access_reader: None,
+            lifetime: PhantomData,
         }
     }
 
@@ -203,12 +205,6 @@ impl<'a> PdfDocument<'a> {
     #[inline]
     pub(crate) fn handle(&self) -> FPDF_DOCUMENT {
         self.handle
-    }
-
-    /// Returns the [PdfiumLibraryBindings] used by this [PdfDocument].
-    #[inline]
-    pub fn bindings(&self) -> &'a dyn PdfiumLibraryBindings {
-        self.bindings
     }
 
     /// Transfers ownership of the byte buffer containing the binary data of this [PdfDocument],
@@ -231,7 +227,11 @@ impl<'a> PdfDocument<'a> {
     pub fn version(&self) -> PdfDocumentVersion {
         let mut version = 0;
 
-        if self.bindings.FPDF_GetFileVersion(self.handle, &mut version) != 0 {
+        if unsafe {
+            self.bindings()
+                .FPDF_GetFileVersion(self.handle, &mut version)
+        } != 0
+        {
             PdfDocumentVersion::from_pdfium(version)
         } else {
             PdfDocumentVersion::Unset
@@ -245,7 +245,7 @@ impl<'a> PdfDocument<'a> {
 
     /// Returns an immutable collection of all the [PdfAttachments] embedded in this [PdfDocument].
     #[inline]
-    pub fn attachments(&self) -> &PdfAttachments {
+    pub fn attachments(&self) -> &PdfAttachments<'_> {
         &self.attachments
     }
 
@@ -257,19 +257,31 @@ impl<'a> PdfDocument<'a> {
 
     /// Returns an immutable collection of all the [PdfBookmarks] in this [PdfDocument].
     #[inline]
-    pub fn bookmarks(&self) -> &PdfBookmarks {
+    pub fn bookmarks(&self) -> &PdfBookmarks<'_> {
         &self.bookmarks
+    }
+
+    /// Returns an immutable reference to the [PdfCatalog] properties for this [PdfDocument].
+    #[inline]
+    pub fn catalog(&self) -> &PdfCatalog<'_> {
+        &self.catalog
+    }
+
+    /// Returns a mutable reference to the [PdfCatalog] properties for this [PdfDocument].
+    #[inline]
+    pub fn catalog_mut(&mut self) -> &mut PdfCatalog<'a> {
+        &mut self.catalog
     }
 
     /// Returns an immutable reference to the [PdfForm] embedded in this [PdfDocument], if any.
     #[inline]
-    pub fn form(&self) -> Option<&PdfForm> {
+    pub fn form(&self) -> Option<&PdfForm<'_>> {
         self.form.as_ref()
     }
 
     /// Returns an immutable collection of all the [PdfFonts] in this [PdfDocument].
     #[inline]
-    pub fn fonts(&self) -> &PdfFonts {
+    pub fn fonts(&self) -> &PdfFonts<'_> {
         &self.fonts
     }
 
@@ -281,7 +293,7 @@ impl<'a> PdfDocument<'a> {
 
     /// Returns an immutable collection of all the [PdfMetadata] tags in this [PdfDocument].
     #[inline]
-    pub fn metadata(&self) -> &PdfMetadata {
+    pub fn metadata(&self) -> &PdfMetadata<'_> {
         &self.metadata
     }
 
@@ -299,13 +311,13 @@ impl<'a> PdfDocument<'a> {
 
     /// Returns an immutable collection of all the [PdfPermissions] applied to this [PdfDocument].
     #[inline]
-    pub fn permissions(&self) -> &PdfPermissions {
+    pub fn permissions(&self) -> &PdfPermissions<'_> {
         &self.permissions
     }
 
     /// Returns an immutable collection of all the [PdfSignatures] attached to this [PdfDocument].
     #[inline]
-    pub fn signatures(&self) -> &PdfSignatures {
+    pub fn signatures(&self) -> &PdfSignatures<'_> {
         &self.signatures
     }
 
@@ -350,6 +362,9 @@ impl<'a> PdfDocument<'a> {
     }
 
     /// Writes this [PdfDocument] to the given writer.
+    ///
+    /// If the given writer implementation itself calls Pdfium functions, then it will block
+    /// when used in conjunction with this crate's `thread_safe` feature.
     pub fn save_to_writer<W: Write + 'static>(&self, writer: &mut W) -> Result<(), PdfiumError> {
         // TODO: AJRC - 25/5/22 - investigate supporting the FPDF_INCREMENTAL, FPDF_NO_INCREMENTAL,
         // and FPDF_REMOVE_SECURITY flags defined in fpdf_save.h. There's not a lot of information
@@ -361,22 +376,26 @@ impl<'a> PdfDocument<'a> {
         let mut pdfium_file_writer = get_pdfium_file_writer_from_writer(writer);
 
         let result = match self.output_version {
-            Some(version) => self.bindings.FPDF_SaveWithVersion(
-                self.handle,
-                pdfium_file_writer.as_fpdf_file_write_mut_ptr(),
-                flags,
-                version
-                    .as_pdfium()
-                    .unwrap_or_else(|| PdfDocumentVersion::DEFAULT_VERSION.as_pdfium().unwrap()),
-            ),
-            None => self.bindings.FPDF_SaveAsCopy(
-                self.handle,
-                pdfium_file_writer.as_fpdf_file_write_mut_ptr(),
-                flags,
-            ),
+            Some(version) => unsafe {
+                self.bindings().FPDF_SaveWithVersion(
+                    self.handle,
+                    pdfium_file_writer.as_fpdf_file_write_mut_ptr(),
+                    flags,
+                    version.as_pdfium().unwrap_or_else(|| {
+                        PdfDocumentVersion::DEFAULT_VERSION.as_pdfium().unwrap()
+                    }),
+                )
+            },
+            None => unsafe {
+                self.bindings().FPDF_SaveAsCopy(
+                    self.handle,
+                    pdfium_file_writer.as_fpdf_file_write_mut_ptr(),
+                    flags,
+                )
+            },
         };
 
-        match self.bindings.is_true(result) {
+        match self.bindings().is_true(result) {
             true => {
                 // Pdfium's return value indicated success. Flush the buffer.
 
@@ -443,7 +462,16 @@ impl<'a> Drop for PdfDocument<'a> {
         // avoiding a segmentation fault when using Pdfium builds compiled with V8/XFA support.
 
         self.form = None;
-        self.bindings.FPDF_CloseDocument(self.handle);
+
+        // Close all fonts loaded into this document's font registry _before_ closing the
+        // document itself. Struct fields are dropped only _after_ this Drop impl runs, so
+        // without this, each font's FPDFFont_Close() would execute against an already-closed
+        // document, reading freed memory inside Pdfium and corrupting the process heap.
+        self.fonts.clear();
+
+        unsafe {
+            self.bindings().FPDF_CloseDocument(self.handle);
+        }
     }
 }
 
@@ -456,8 +484,10 @@ impl<'a> Debug for PdfDocument<'a> {
     }
 }
 
-#[cfg(feature = "sync")]
-unsafe impl<'a> Sync for PdfDocument<'a> {}
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfDocument<'a> {}
 
-#[cfg(feature = "sync")]
+#[cfg(feature = "thread_safe")]
 unsafe impl<'a> Send for PdfDocument<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfDocument<'a> {}

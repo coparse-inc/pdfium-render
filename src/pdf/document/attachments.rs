@@ -2,10 +2,11 @@
 //! `PdfDocument`.
 
 use crate::bindgen::FPDF_DOCUMENT;
-use crate::bindings::PdfiumLibraryBindings;
 use crate::error::{PdfiumError, PdfiumInternalError};
 use crate::pdf::document::attachment::PdfAttachment;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use std::io::Read;
+use std::marker::PhantomData;
 use std::ops::{Range, RangeInclusive};
 use std::os::raw::{c_int, c_ulong, c_void};
 
@@ -27,36 +28,33 @@ use {
 #[cfg(doc)]
 struct Blob;
 
+#[cfg(doc)]
+use crate::pdf::document::PdfDocument;
+
+/// The zero-based index of a single attachment inside its containing [PdfAttachments] collection.
 pub type PdfAttachmentIndex = u16;
 
-/// The collection of [PdfAttachment] objects embedded in a `PdfDocument`.
+/// The collection of [PdfAttachment] objects embedded in a [PdfDocument].
 pub struct PdfAttachments<'a> {
     document_handle: FPDF_DOCUMENT,
-    bindings: &'a dyn PdfiumLibraryBindings,
+    lifetime: PhantomData<&'a FPDF_DOCUMENT>,
 }
 
 impl<'a> PdfAttachments<'a> {
     #[inline]
-    pub(crate) fn from_pdfium(
-        document_handle: FPDF_DOCUMENT,
-        bindings: &'a dyn PdfiumLibraryBindings,
-    ) -> Self {
+    pub(crate) fn from_pdfium(document_handle: FPDF_DOCUMENT) -> Self {
         PdfAttachments {
             document_handle,
-            bindings,
+            lifetime: PhantomData,
         }
-    }
-
-    /// Returns the [PdfiumLibraryBindings] used by this [PdfAttachments] collection.
-    #[inline]
-    pub fn bindings(&self) -> &'a dyn PdfiumLibraryBindings {
-        self.bindings
     }
 
     /// Returns the number of attachments in this [PdfAttachments] collection.
     pub fn len(&self) -> PdfAttachmentIndex {
-        self.bindings()
-            .FPDFDoc_GetAttachmentCount(self.document_handle) as PdfAttachmentIndex
+        (unsafe {
+            self.bindings()
+                .FPDFDoc_GetAttachmentCount(self.document_handle)
+        }) as PdfAttachmentIndex
     }
 
     /// Returns `true` if this [PdfAttachments] collection is empty.
@@ -88,16 +86,17 @@ impl<'a> PdfAttachments<'a> {
             return Err(PdfiumError::AttachmentIndexOutOfBounds);
         }
 
-        let handle = self
-            .bindings()
-            .FPDFDoc_GetAttachment(self.document_handle, index as c_int);
+        let handle = unsafe {
+            self.bindings()
+                .FPDFDoc_GetAttachment(self.document_handle, index as c_int)
+        };
 
         if handle.is_null() {
             Err(PdfiumError::PdfiumLibraryInternalError(
                 PdfiumInternalError::Unknown,
             ))
         } else {
-            Ok(PdfAttachment::from_pdfium(handle, self.bindings()))
+            Ok(PdfAttachment::from_pdfium(handle))
         }
     }
 
@@ -108,13 +107,14 @@ impl<'a> PdfAttachments<'a> {
         &mut self,
         name: &str,
         bytes: &[u8],
-    ) -> Result<PdfAttachment, PdfiumError> {
+    ) -> Result<PdfAttachment<'_>, PdfiumError> {
         // Creating the attachment is a two step operation. First, we create the FPDF_ATTACHMENT
         // handle using the given name. Then, we add the given byte data to the FPDF_ATTACHMENT.
 
-        let handle = self
-            .bindings()
-            .FPDFDoc_AddAttachment_str(self.document_handle, name);
+        let handle = unsafe {
+            self.bindings()
+                .FPDFDoc_AddAttachment_str(self.document_handle, name)
+        };
 
         if handle.is_null() {
             Err(PdfiumError::PdfiumLibraryInternalError(
@@ -123,16 +123,15 @@ impl<'a> PdfAttachments<'a> {
         } else {
             // With the FPDF_ATTACHMENT correctly created, we can now apply the byte data to the attachment.
 
-            if self
-                .bindings()
-                .is_true(self.bindings().FPDFAttachment_SetFile(
+            if self.bindings().is_true(unsafe {
+                self.bindings().FPDFAttachment_SetFile(
                     handle,
                     self.document_handle,
                     bytes.as_ptr() as *const c_void,
                     bytes.len() as c_ulong,
-                ))
-            {
-                Ok(PdfAttachment::from_pdfium(handle, self.bindings))
+                )
+            }) {
+                Ok(PdfAttachment::from_pdfium(handle))
             } else {
                 // The return value from FPDFAttachment_SetFile() indicates failure.
 
@@ -165,7 +164,7 @@ impl<'a> PdfAttachments<'a> {
         &mut self,
         name: &str,
         path: &(impl AsRef<Path> + ?Sized),
-    ) -> Result<PdfAttachment, PdfiumError> {
+    ) -> Result<PdfAttachment<'_>, PdfiumError> {
         self.create_attachment_from_reader(name, File::open(path).map_err(PdfiumError::IoError)?)
     }
 
@@ -177,7 +176,7 @@ impl<'a> PdfAttachments<'a> {
         &mut self,
         name: &str,
         mut reader: R,
-    ) -> Result<PdfAttachment, PdfiumError> {
+    ) -> Result<PdfAttachment<'_>, PdfiumError> {
         let mut bytes = Vec::new();
 
         reader
@@ -265,10 +264,10 @@ impl<'a> PdfAttachments<'a> {
             return Err(PdfiumError::AttachmentIndexOutOfBounds);
         }
 
-        if self.bindings().is_true(
+        if self.bindings().is_true(unsafe {
             self.bindings()
-                .FPDFDoc_DeleteAttachment(self.document_handle, index as c_int),
-        ) {
+                .FPDFDoc_DeleteAttachment(self.document_handle, index as c_int)
+        }) {
             Ok(())
         } else {
             Err(PdfiumError::PdfiumLibraryInternalError(
@@ -279,10 +278,18 @@ impl<'a> PdfAttachments<'a> {
 
     /// Returns an iterator over all the attachments in this [PdfAttachments] collection.
     #[inline]
-    pub fn iter(&self) -> PdfAttachmentsIterator {
+    pub fn iter(&self) -> PdfAttachmentsIterator<'_> {
         PdfAttachmentsIterator::new(self)
     }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfAttachments<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfAttachments<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfAttachments<'a> {}
 
 /// An iterator over all the [PdfAttachment] objects in a [PdfAttachments] collection.
 pub struct PdfAttachmentsIterator<'a> {

@@ -17,6 +17,7 @@ pub mod strikeout;
 pub mod text;
 pub mod underline;
 pub mod unsupported;
+pub mod variable_text;
 pub mod widget;
 pub mod xfa_widget;
 
@@ -41,7 +42,9 @@ use crate::pdf::document::page::annotation::ink::PdfPageInkAnnotation;
 use crate::pdf::document::page::annotation::link::PdfPageLinkAnnotation;
 use crate::pdf::document::page::annotation::objects::PdfPageAnnotationObjects;
 use crate::pdf::document::page::annotation::popup::PdfPagePopupAnnotation;
-use crate::pdf::document::page::annotation::private::internal::PdfPageAnnotationPrivate;
+use crate::pdf::document::page::annotation::private::internal::{
+    PdfAnnotationFlags, PdfPageAnnotationPrivate,
+};
 use crate::pdf::document::page::annotation::redacted::PdfPageRedactedAnnotation;
 use crate::pdf::document::page::annotation::square::PdfPageSquareAnnotation;
 use crate::pdf::document::page::annotation::squiggly::PdfPageSquigglyAnnotation;
@@ -53,9 +56,14 @@ use crate::pdf::document::page::annotation::unsupported::PdfPageUnsupportedAnnot
 use crate::pdf::document::page::annotation::widget::PdfPageWidgetAnnotation;
 use crate::pdf::document::page::annotation::xfa_widget::PdfPageXfaWidgetAnnotation;
 use crate::pdf::document::page::field::PdfFormField;
+use crate::pdf::document::page::object::ownership::PdfPageObjectOwnership;
 use crate::pdf::points::PdfPoints;
 use crate::pdf::rect::PdfRect;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use chrono::prelude::*;
+
+#[cfg(doc)]
+use {crate::pdf::document::page::field::PdfFormFieldCommon, crate::pdf::document::page::PdfPage};
 
 /// The type of a single [PdfPageAnnotation], as defined in table 8.20 of the PDF Reference,
 /// version 1.7, on page 615.
@@ -193,7 +201,7 @@ impl PdfPageAnnotationType {
     }
 }
 
-/// A single user annotation on a `PdfPage`.
+/// A single user annotation on a [PdfPage].
 pub enum PdfPageAnnotation<'a> {
     Circle(PdfPageCircleAnnotation<'a>),
     FreeText(PdfPageFreeTextAnnotation<'a>),
@@ -225,9 +233,10 @@ impl<'a> PdfPageAnnotation<'a> {
         form_handle: Option<FPDF_FORMHANDLE>,
         bindings: &'a dyn PdfiumLibraryBindings,
     ) -> Self {
-        let annotation_type =
-            PdfPageAnnotationType::from_pdfium(bindings.FPDFAnnot_GetSubtype(annotation_handle))
-                .unwrap_or(PdfPageAnnotationType::Unknown);
+        let annotation_type = PdfPageAnnotationType::from_pdfium(unsafe {
+            bindings.FPDFAnnot_GetSubtype(annotation_handle)
+        })
+        .unwrap_or(PdfPageAnnotationType::Unknown);
 
         match annotation_type {
             PdfPageAnnotationType::Circle => {
@@ -235,7 +244,6 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             PdfPageAnnotationType::FreeText => {
@@ -243,7 +251,6 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             PdfPageAnnotationType::Highlight => {
@@ -251,31 +258,19 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
-            PdfPageAnnotationType::Ink => {
-                PdfPageAnnotation::Ink(PdfPageInkAnnotation::from_pdfium(
-                    document_handle,
-                    page_handle,
-                    annotation_handle,
-                    bindings,
-                ))
-            }
-            PdfPageAnnotationType::Link => {
-                PdfPageAnnotation::Link(PdfPageLinkAnnotation::from_pdfium(
-                    document_handle,
-                    page_handle,
-                    annotation_handle,
-                    bindings,
-                ))
-            }
+            PdfPageAnnotationType::Ink => PdfPageAnnotation::Ink(
+                PdfPageInkAnnotation::from_pdfium(document_handle, page_handle, annotation_handle),
+            ),
+            PdfPageAnnotationType::Link => PdfPageAnnotation::Link(
+                PdfPageLinkAnnotation::from_pdfium(document_handle, page_handle, annotation_handle),
+            ),
             PdfPageAnnotationType::Popup => {
                 PdfPageAnnotation::Popup(PdfPagePopupAnnotation::from_pdfium(
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             PdfPageAnnotationType::Square => {
@@ -283,7 +278,6 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             PdfPageAnnotationType::Squiggly => {
@@ -291,7 +285,6 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             PdfPageAnnotationType::Stamp => {
@@ -299,7 +292,6 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             PdfPageAnnotationType::Strikeout => {
@@ -307,23 +299,16 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
-            PdfPageAnnotationType::Text => {
-                PdfPageAnnotation::Text(PdfPageTextAnnotation::from_pdfium(
-                    document_handle,
-                    page_handle,
-                    annotation_handle,
-                    bindings,
-                ))
-            }
+            PdfPageAnnotationType::Text => PdfPageAnnotation::Text(
+                PdfPageTextAnnotation::from_pdfium(document_handle, page_handle, annotation_handle),
+            ),
             PdfPageAnnotationType::Underline => {
                 PdfPageAnnotation::Underline(PdfPageUnderlineAnnotation::from_pdfium(
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             PdfPageAnnotationType::Widget => {
@@ -349,7 +334,6 @@ impl<'a> PdfPageAnnotation<'a> {
                     document_handle,
                     page_handle,
                     annotation_handle,
-                    bindings,
                 ))
             }
             _ => PdfPageAnnotation::Unsupported(PdfPageUnsupportedAnnotation::from_pdfium(
@@ -357,7 +341,6 @@ impl<'a> PdfPageAnnotation<'a> {
                 page_handle,
                 annotation_handle,
                 annotation_type,
-                bindings,
             )),
         }
     }
@@ -385,6 +368,7 @@ impl<'a> PdfPageAnnotation<'a> {
     }
 
     #[inline]
+    #[allow(dead_code)] // We don't currently use unwrap_as_trait_mut(), but we expect to in the future
     pub(crate) fn unwrap_as_trait_mut(&mut self) -> &mut dyn PdfPageAnnotationPrivate<'a> {
         match self {
             PdfPageAnnotation::Circle(annotation) => annotation,
@@ -513,7 +497,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Circle].
     #[inline]
-    pub fn as_circle_annotation(&self) -> Option<&PdfPageCircleAnnotation> {
+    pub fn as_circle_annotation(&self) -> Option<&PdfPageCircleAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Circle(annotation) => Some(annotation),
             _ => None,
@@ -535,7 +519,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::FreeText].
     #[inline]
-    pub fn as_free_text_annotation(&self) -> Option<&PdfPageFreeTextAnnotation> {
+    pub fn as_free_text_annotation(&self) -> Option<&PdfPageFreeTextAnnotation<'_>> {
         match self {
             PdfPageAnnotation::FreeText(annotation) => Some(annotation),
             _ => None,
@@ -557,7 +541,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Highlight].
     #[inline]
-    pub fn as_highlight_annotation(&self) -> Option<&PdfPageHighlightAnnotation> {
+    pub fn as_highlight_annotation(&self) -> Option<&PdfPageHighlightAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Highlight(annotation) => Some(annotation),
             _ => None,
@@ -579,7 +563,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Ink].
     #[inline]
-    pub fn as_ink_annotation(&self) -> Option<&PdfPageInkAnnotation> {
+    pub fn as_ink_annotation(&self) -> Option<&PdfPageInkAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Ink(annotation) => Some(annotation),
             _ => None,
@@ -601,7 +585,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Link].
     #[inline]
-    pub fn as_link_annotation(&self) -> Option<&PdfPageLinkAnnotation> {
+    pub fn as_link_annotation(&self) -> Option<&PdfPageLinkAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Link(annotation) => Some(annotation),
             _ => None,
@@ -623,7 +607,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Popup].
     #[inline]
-    pub fn as_popup_annotation(&self) -> Option<&PdfPagePopupAnnotation> {
+    pub fn as_popup_annotation(&self) -> Option<&PdfPagePopupAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Popup(annotation) => Some(annotation),
             _ => None,
@@ -645,7 +629,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Square].
     #[inline]
-    pub fn as_square_annotation(&self) -> Option<&PdfPageSquareAnnotation> {
+    pub fn as_square_annotation(&self) -> Option<&PdfPageSquareAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Square(annotation) => Some(annotation),
             _ => None,
@@ -667,7 +651,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Squiggly].
     #[inline]
-    pub fn as_squiggly_annotation(&self) -> Option<&PdfPageSquigglyAnnotation> {
+    pub fn as_squiggly_annotation(&self) -> Option<&PdfPageSquigglyAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Squiggly(annotation) => Some(annotation),
             _ => None,
@@ -689,7 +673,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Stamp].
     #[inline]
-    pub fn as_stamp_annotation(&self) -> Option<&PdfPageStampAnnotation> {
+    pub fn as_stamp_annotation(&self) -> Option<&PdfPageStampAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Stamp(annotation) => Some(annotation),
             _ => None,
@@ -711,7 +695,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Strikeout].
     #[inline]
-    pub fn as_strikeout_annotation(&self) -> Option<&PdfPageStrikeoutAnnotation> {
+    pub fn as_strikeout_annotation(&self) -> Option<&PdfPageStrikeoutAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Strikeout(annotation) => Some(annotation),
             _ => None,
@@ -733,7 +717,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Text].
     #[inline]
-    pub fn as_text_annotation(&self) -> Option<&PdfPageTextAnnotation> {
+    pub fn as_text_annotation(&self) -> Option<&PdfPageTextAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Text(annotation) => Some(annotation),
             _ => None,
@@ -755,7 +739,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Underline].
     #[inline]
-    pub fn as_underline_annotation(&self) -> Option<&PdfPageUnderlineAnnotation> {
+    pub fn as_underline_annotation(&self) -> Option<&PdfPageUnderlineAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Underline(annotation) => Some(annotation),
             _ => None,
@@ -777,7 +761,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Widget].
     #[inline]
-    pub fn as_widget_annotation(&self) -> Option<&PdfPageWidgetAnnotation> {
+    pub fn as_widget_annotation(&self) -> Option<&PdfPageWidgetAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Widget(annotation) => Some(annotation),
             _ => None,
@@ -799,7 +783,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::XfaWidget].
     #[inline]
-    pub fn as_xfa_widget_annotation(&self) -> Option<&PdfPageXfaWidgetAnnotation> {
+    pub fn as_xfa_widget_annotation(&self) -> Option<&PdfPageXfaWidgetAnnotation<'_>> {
         match self {
             PdfPageAnnotation::XfaWidget(annotation) => Some(annotation),
             _ => None,
@@ -821,7 +805,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// for this [PdfPageAnnotation], if this annotation has an annotation type of
     /// [PdfPageAnnotationType::Redacted].
     #[inline]
-    pub fn as_redacted_annotation(&self) -> Option<&PdfPageRedactedAnnotation> {
+    pub fn as_redacted_annotation(&self) -> Option<&PdfPageRedactedAnnotation<'_>> {
         match self {
             PdfPageAnnotation::Redacted(annotation) => Some(annotation),
             _ => None,
@@ -845,7 +829,7 @@ impl<'a> PdfPageAnnotation<'a> {
     /// Only annotations of type [PdfPageAnnotationType::Widget] and [PdfPageAnnotationType::XfaWidget]
     /// wrap form fields.
     #[inline]
-    pub fn as_form_field(&self) -> Option<&PdfFormField> {
+    pub fn as_form_field(&self) -> Option<&PdfFormField<'_>> {
         match self {
             PdfPageAnnotation::Widget(annotation) => annotation.form_field(),
             PdfPageAnnotation::XfaWidget(annotation) => annotation.form_field(),
@@ -925,6 +909,9 @@ pub trait PdfPageAnnotationCommon {
     /// Returns the name of the creator of this [PdfPageAnnotation], if any.
     fn creator(&self) -> Option<String>;
 
+    /// Sets the name of the creator of this [PdfPageAnnotation].
+    fn set_creator(&mut self, creator: &str) -> Result<(), PdfiumError>;
+
     /// Returns the date and time when this [PdfPageAnnotation] was originally created, if any.
     fn creation_date(&self) -> Option<String>;
 
@@ -949,6 +936,138 @@ pub trait PdfPageAnnotationCommon {
     /// Sets the color of any stroked paths in this [PdfPageAnnotation].
     fn set_stroke_color(&mut self, stroke_color: PdfColor) -> Result<(), PdfiumError>;
 
+    /// Returns `true` if this [PdfPageAnnotation] should not be displayed to the user
+    /// if it does not belong to one of the standard annotation types and no annotation
+    /// handler is available that supports it.
+    fn is_invisible_if_unsupported(&self) -> bool;
+
+    /// Controls whether or not this [PdfPageAnnotation] should be displayed to the user
+    /// if it does not belong to one of the standard annotation types and no annotation
+    /// handler is available that supports it.
+    fn set_is_invisible_if_unsupported(&mut self, is_invisible: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if this [PdfPageAnnotation] should not be displayed or printed,
+    /// nor allowed to interact with the user, regardless of its annotation type or whether
+    /// an annotation handler is available that supports it.
+    ///
+    /// This flag was added in PDF version 1.2.
+    fn is_hidden(&self) -> bool;
+
+    /// Controls whether or not this [PdfPageAnnotation] should be displayed, printed,
+    /// and allowed to interact with the user, regardless of its annotation type or whether
+    /// an annotation handler is available that supports it.
+    ///
+    /// This flag was added in PDF version 1.2.
+    fn set_is_hidden(&mut self, is_hidden: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if this [PdfPageAnnotation] should be printed when the
+    /// page is printed.
+    ///
+    /// This can be useful, for example, for annotations representing interactive
+    /// push buttons, which would serve no meaningful purpose on the printed page.
+    ///
+    /// This flag was added in PDF version 1.2.
+    fn is_printed(&self) -> bool;
+
+    /// Controls whether or not this [PdfPageAnnotation] should be printed when the
+    /// page is printed.
+    ///
+    /// This can be useful, for example, for annotations representing interactive
+    /// push buttons, which would serve no meaningful purpose on the printed page.
+    ///
+    /// This flag was added in PDF version 1.2.
+    fn set_is_printed(&mut self, is_printed: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if the appearance of this [PdfPageAnnotation] should scale to match
+    /// the magnification of the page. If `false`, the location of the annotation on the
+    /// page (defined by the upper-left corner of its annotation rectangle) will remain fixed,
+    /// regardless of the page magnification.
+    ///
+    /// This flag was added in PDF version 1.3.
+    fn is_zoomable(&self) -> bool;
+
+    /// Controls whether or not the appearance of this [PdfPageAnnotation] should scale to
+    /// match the magnification of the page.
+    ///
+    /// This flag was added in PDF version 1.3.
+    fn set_is_zoomable(&mut self, is_zoomable: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if the appearance of this [PdfPageAnnotation] should rotate to match
+    /// the rotation of the page. If `false`, the upper-left corner of the annotation rectangle
+    /// will remain in a fixed location on the page, regardless of the page rotation.
+    ///
+    /// This flag was added in PDF version 1.3.
+    fn is_rotatable(&self) -> bool;
+
+    /// Controls whether or not the appearance of this [PdfPageAnnotation] should rotate
+    /// to match the rotation of the page.
+    ///
+    /// This flag was added in PDF version 1.3.
+    fn set_is_rotatable(&mut self, is_rotatable: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if this [PdfPageAnnotation] should not be displayed to, or allowed to
+    /// interact with, the user. The annotation may be printed (depending on the setting of
+    /// the [PdfPageAnnotationCommon::is_printed()] flag) but should be considered
+    /// hidden for purposes of on-screen display and user interaction.
+    ///
+    /// This flag was added in PDF version 1.3.
+    fn is_printable_but_not_viewable(&self) -> bool;
+
+    /// Controls whether or not this [PdfPageAnnotation] should be displayed to, and allowed
+    /// to interact with, the user. Whether or not the annotation should be printed is
+    /// controlled separately by the [PdfPageAnnotationCommon::set_is_printed()] function.
+    ///
+    /// This flag was added in PDF version 1.3.
+    fn set_is_printable_but_not_viewable(
+        &mut self,
+        is_printable_but_not_viewable: bool,
+    ) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if this [PdfPageAnnotation] should not be allowed to interact
+    /// with the user. The annotation may be displayed or printed (depending on the settings
+    /// of the [PdfPageAnnotationCommon::is_printed()] and [PdfPageAnnotationCommon::is_printable_but_not_viewable()]
+    /// flags) but should not respond to mouse clicks or change its appearance
+    /// in response to mouse motions.
+    ///
+    /// This flag is ignored for widget annotations; its function is subsumed by
+    /// the [PdfFormFieldCommon::is_read_only()] flag of the associated form field.
+    ///
+    /// THis flag was added in PDF version 1.3.
+    fn is_read_only(&self) -> bool;
+
+    /// Controls whether or not this [PdfPageAnnotation] should be allowed to interact
+    /// with the user.
+    ///
+    /// This flag is ignored for widget annotations; its function is subsumed by
+    /// the [PdfFormFieldCommon::is_read_only()] flag of the associated form field.
+    ///
+    /// THis flag was added in PDF version 1.3.
+    fn set_is_read_only(&mut self, is_read_only: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if this [PdfPageAnnotation] is locked. Locked annotations cannot be
+    /// deleted, repositioned, or resized by the user. The content of a locked annotation
+    /// may still be editable, depending on the setting of the [PdfPageAnnotationCommon::is_editable()]
+    /// flag.
+    fn is_locked(&self) -> bool;
+
+    /// Controls whether or not this [PdfPageAnnotation] is locked. Locked annotations cannot be
+    /// deleted, repositioned, or resized by the user. The content of a locked annotation
+    /// may still be editable, depending on the setting of the [PdfPageAnnotationCommon::set_is_editable()]
+    /// function.
+    fn set_is_locked(&mut self, is_locked: bool) -> Result<(), PdfiumError>;
+
+    /// Returns `true` if the contents of this [PdfPageAnnotation] can be edited by the user.
+    /// This setting does not control whether or not the annotation can be deleted,
+    /// repositioned, or resized; those properties are controlled by the
+    /// [PdfPageAnnotationCommon::is_locked()] flag.
+    fn is_editable(&self) -> bool;
+
+    /// Controls whether or not the contents of this [PdfPageAnnotation] can be edited by the user.
+    /// This setting does not control whether or not the annotation can be deleted,
+    /// repositioned, or resized; those properties are controlled by the
+    /// [PdfPageAnnotationCommon::set_is_locked()] function.
+    fn set_is_editable(&mut self, is_editable: bool) -> Result<(), PdfiumError>;
+
     /// Returns an immutable collection of all the page objects in this [PdfPageAnnotation].
     ///
     /// Page objects can be retrieved from any type of [PdfPageAnnotation], but Pdfium currently
@@ -961,7 +1080,7 @@ pub trait PdfPageAnnotationCommon {
     /// ```
     /// annotation.as_stamp_annotation_mut().unwrap().objects_mut();
     /// ```
-    fn objects(&self) -> &PdfPageAnnotationObjects;
+    fn objects(&self) -> &PdfPageAnnotationObjects<'_>;
 
     /// Returns an immutable collection of the attachment points that visually associate
     /// this [PdfPageAnnotation] with one or more `PdfPageObject` objects on this `PdfPage`.
@@ -977,7 +1096,7 @@ pub trait PdfPageAnnotationCommon {
     /// ```
     /// annotation.as_link_annotation_mut().unwrap().attachment_points_mut();
     /// ```
-    fn attachment_points(&self) -> &PdfPageAnnotationAttachmentPoints;
+    fn attachment_points(&self) -> &PdfPageAnnotationAttachmentPoints<'_>;
 }
 
 // Blanket implementation for all PdfPageAnnotation types.
@@ -1042,6 +1161,11 @@ where
     }
 
     #[inline]
+    fn set_creator(&mut self, creator: &str) -> Result<(), PdfiumError> {
+        self.set_creator_impl(creator)
+    }
+
+    #[inline]
     fn creation_date(&self) -> Option<String> {
         self.creation_date_impl()
     }
@@ -1082,13 +1206,109 @@ where
     }
 
     #[inline]
-    fn objects(&self) -> &PdfPageAnnotationObjects {
+    fn objects(&self) -> &PdfPageAnnotationObjects<'_> {
         self.objects_impl()
     }
 
     #[inline]
-    fn attachment_points(&self) -> &PdfPageAnnotationAttachmentPoints {
+    fn attachment_points(&self) -> &PdfPageAnnotationAttachmentPoints<'_> {
         self.attachment_points_impl()
+    }
+
+    #[inline]
+    fn is_invisible_if_unsupported(&self) -> bool {
+        self.get_flags_impl()
+            .contains(PdfAnnotationFlags::Invisible)
+    }
+
+    #[inline]
+    fn set_is_invisible_if_unsupported(&mut self, is_invisible: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::Invisible, is_invisible)
+    }
+
+    #[inline]
+    fn is_hidden(&self) -> bool {
+        self.get_flags_impl().contains(PdfAnnotationFlags::Hidden)
+    }
+
+    #[inline]
+    fn set_is_hidden(&mut self, is_hidden: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::Hidden, is_hidden)
+    }
+
+    #[inline]
+    fn is_printed(&self) -> bool {
+        self.get_flags_impl().contains(PdfAnnotationFlags::Print)
+    }
+
+    #[inline]
+    fn set_is_printed(&mut self, is_printed: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::Print, is_printed)
+    }
+
+    #[inline]
+    fn is_zoomable(&self) -> bool {
+        !self.get_flags_impl().contains(PdfAnnotationFlags::NoZoom)
+    }
+
+    #[inline]
+    fn set_is_zoomable(&mut self, is_zoomable: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::NoZoom, !is_zoomable)
+    }
+
+    #[inline]
+    fn is_rotatable(&self) -> bool {
+        !self.get_flags_impl().contains(PdfAnnotationFlags::NoRotate)
+    }
+
+    #[inline]
+    fn set_is_rotatable(&mut self, is_rotatable: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::NoRotate, !is_rotatable)
+    }
+
+    #[inline]
+    fn is_printable_but_not_viewable(&self) -> bool {
+        self.get_flags_impl().contains(PdfAnnotationFlags::NoView)
+    }
+
+    #[inline]
+    fn set_is_printable_but_not_viewable(
+        &mut self,
+        is_printable_but_not_viewable: bool,
+    ) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::NoView, is_printable_but_not_viewable)
+    }
+
+    #[inline]
+    fn is_read_only(&self) -> bool {
+        self.get_flags_impl().contains(PdfAnnotationFlags::ReadOnly)
+    }
+
+    #[inline]
+    fn set_is_read_only(&mut self, is_read_only: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::ReadOnly, is_read_only)
+    }
+
+    #[inline]
+    fn is_locked(&self) -> bool {
+        self.get_flags_impl().contains(PdfAnnotationFlags::Locked)
+    }
+
+    #[inline]
+    fn set_is_locked(&mut self, is_locked: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::Locked, is_locked)
+    }
+
+    #[inline]
+    fn is_editable(&self) -> bool {
+        !self
+            .get_flags_impl()
+            .contains(PdfAnnotationFlags::LockedContents)
+    }
+
+    #[inline]
+    fn set_is_editable(&mut self, is_editable: bool) -> Result<(), PdfiumError> {
+        self.update_one_flag_impl(PdfAnnotationFlags::LockedContents, !is_editable)
     }
 }
 
@@ -1099,28 +1319,18 @@ impl<'a> PdfPageAnnotationPrivate<'a> for PdfPageAnnotation<'a> {
     }
 
     #[inline]
-    fn bindings(&self) -> &dyn PdfiumLibraryBindings {
-        self.unwrap_as_trait().bindings()
+    fn ownership(&self) -> &PdfPageObjectOwnership {
+        self.unwrap_as_trait().ownership()
     }
 
     #[inline]
-    fn objects_impl(&self) -> &PdfPageAnnotationObjects {
+    fn objects_impl(&self) -> &PdfPageAnnotationObjects<'_> {
         self.unwrap_as_trait().objects_impl()
     }
 
     #[inline]
-    fn objects_mut_impl(&mut self) -> &mut PdfPageAnnotationObjects<'a> {
-        self.unwrap_as_trait_mut().objects_mut_impl()
-    }
-
-    #[inline]
-    fn attachment_points_impl(&self) -> &PdfPageAnnotationAttachmentPoints {
+    fn attachment_points_impl(&self) -> &PdfPageAnnotationAttachmentPoints<'_> {
         self.unwrap_as_trait().attachment_points_impl()
-    }
-
-    #[inline]
-    fn attachment_points_mut_impl(&mut self) -> &mut PdfPageAnnotationAttachmentPoints<'a> {
-        self.unwrap_as_trait_mut().attachment_points_mut_impl()
     }
 }
 
@@ -1128,6 +1338,16 @@ impl<'a> Drop for PdfPageAnnotation<'a> {
     /// Closes this [PdfPageAnnotation], releasing held memory.
     #[inline]
     fn drop(&mut self) {
-        self.bindings().FPDFPage_CloseAnnot(self.handle());
+        unsafe {
+            self.bindings().FPDFPage_CloseAnnot(self.handle());
+        }
     }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfPageAnnotation<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfPageAnnotation<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfPageAnnotation<'a> {}

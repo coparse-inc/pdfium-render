@@ -5,12 +5,15 @@ use crate::bindgen::{
     FPDF_ERR_UNKNOWN,
 };
 use std::error::Error;
-use std::ffi::IntoStringError;
+use std::ffi::{IntoStringError, NulError};
 use std::fmt::{Display, Formatter, Result};
 use std::num::ParseIntError;
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
+
+#[cfg(doc)]
+use crate::pdfium::Pdfium;
 
 /// A wrapped internal library error from Pdfium's `FPDF_ERR_*` constant values.
 ///
@@ -40,20 +43,33 @@ pub enum PdfiumInternalError {
     Unknown = FPDF_ERR_UNKNOWN as isize,
 }
 
+/// A wrapper enum for handling Pdfium errors as standard Rust `Err` values.
 #[derive(Debug)]
 pub enum PdfiumError {
-    /// The Pdfium WASM module has not been configured.
+    /// The Pdfium WASM module has not been initialized.
+    ///
     /// It is essential that the exported `initialize_pdfium_render()` function be called
     /// from Javascript _before_ calling any `pdfium-render` function from within your Rust code.
     /// See: <https://github.com/ajrcarey/pdfium-render/blob/master/examples/index.html>
     #[cfg(target_arch = "wasm32")]
-    PdfiumWASMModuleNotConfigured,
+    PdfiumWasmModuleNotInitialized,
 
-    /// The external Pdfium library could not be loaded.
+    /// An error occurred during dynamic binding to an external Pdfium library.
     #[cfg(not(target_arch = "wasm32"))]
     LoadLibraryError(libloading::Error),
 
+    /// An error occurred during dynamic binding while converting an FPDF_* function name
+    /// to a C string. The wrapped string value contains more information.
+    #[cfg(not(target_arch = "wasm32"))]
+    LoadLibraryFunctionNameError(String),
+
+    /// The global library bindings have already been initialized based on the
+    /// first call to [Pdfium::new]. Bindings initialization can only occur once
+    /// during the lifetime of the program.
+    PdfiumLibraryBindingsAlreadyInitialized,
+
     UnrecognizedPath,
+    PdfClipPathSegmentIndexOutOfBounds,
     PageIndexOutOfBounds,
     LinkIndexOutOfBounds,
     UnknownBitmapFormat,
@@ -62,11 +78,13 @@ pub enum PdfiumError {
     UnknownFormFieldType,
     UnknownActionType,
     UnknownAppearanceMode,
+    UnknownPageAnnotationVariableTextJustificationType,
     PageObjectIndexOutOfBounds,
-    PageObjectNotAttachedToPage,
-    PageObjectAlreadyAttachedToDifferentPage,
     PageAnnotationIndexOutOfBounds,
-    PageObjectNotAttachedToAnnotation,
+    OwnershipNotAttachedToDocument,
+    OwnershipNotAttachedToPage,
+    OwnershipAlreadyAttachedToDifferentPage,
+    OwnershipNotAttachedToAnnotation,
     FormFieldOptionIndexOutOfBounds,
     FormFieldAppearanceStreamUndefined,
     PageFlattenFailure,
@@ -77,8 +95,12 @@ pub enum PdfiumError {
     UnknownPdfAnnotationType,
     UnknownPdfDestinationViewType,
     UnknownPdfSecurityHandlerRevision,
+    UnknownPdfSignatureModificationDetectionPermissionLevel,
     UnsupportedPdfPageObjectType,
+    NoTextSegmentsInPageText,
     TextSegmentIndexOutOfBounds,
+    TextSearchTargetIsEmpty,
+    NoCharsInPageTextChars,
     CharIndexOutOfBounds,
     NoCharsInPageObject,
     NoCharsInAnnotation,
@@ -108,8 +130,17 @@ pub enum PdfiumError {
     PageAnnotationAttachmentPointIndexOutOfBounds,
     NoAttachmentPointsInPageAnnotation,
     CoordinateConversionFunctionIndicatedError,
+    InvalidFontSize,
+    NoLanguageSetInDocumentCatalog,
 
-    /// A call to `FPDFDest_GetView()` returned a valid FPDFDEST_VIEW_* value, but the number
+    /// Pdfium does not safely support moving page object ownership from one document to another.
+    CannotMoveObjectAcrossDocuments,
+
+    /// Pdfium does not support adding or removing page objects from the page objects
+    /// collection inside a PdfPageXObjectFormObject object.
+    PageObjectsCollectionIsImmutable,
+
+    /// A call to `FPDFDest_GetView()` returned a valid `FPDFDEST_VIEW_*` value, but the number
     /// of view parameters returned does not match the PDF specification.
     PdfDestinationViewInvalidParameters,
 
@@ -122,10 +153,10 @@ pub enum PdfiumError {
     ParseHexadecimalColorUnexpectedLength,
 
     /// The leading `#` character was not found while attempting to parse a `PdfColor` from
-    /// a hexidecimal string in `PdfColor::from_hex()`.
+    /// a hexadecimal string in `PdfColor::from_hex()`.
     ParseHexadecimalColorMissingLeadingHash,
 
-    /// An error occurred converting a byte stream into a CString.
+    /// An error occurred converting a byte stream into a `CString`.
     CStringConversionError(IntoStringError),
 
     /// Two data buffers are expected to have the same size, but they do not.
@@ -152,42 +183,42 @@ pub enum PdfiumError {
     /// The browser's built-in `Window` object could not be retrieved.
     WebSysWindowObjectNotAvailable,
 
+    #[cfg(target_arch = "wasm32")]
     /// A JsValue returned from a function call was set to JsValue::UNDEFINED instead of
     /// a valid value of the expected type.
-    #[cfg(target_arch = "wasm32")]
     JsValueUndefined,
 
-    /// An error was returned when attempting to use the browser's built-in `fetch()` API.
     #[cfg(target_arch = "wasm32")]
+    /// An error was returned when attempting to use the browser's built-in `fetch()` API.
     WebSysFetchError(JsValue),
 
-    /// An invalid Response object was returned when attempting to use the browser's built-in `fetch()` API.
     #[cfg(target_arch = "wasm32")]
+    /// An invalid Response object was returned when attempting to use the browser's built-in `fetch()` API.
     WebSysInvalidResponseError,
 
-    /// An error was returned when attempting to construct a `Blob` object from a byte buffer.
     #[cfg(target_arch = "wasm32")]
+    /// An error was returned when attempting to construct a `Blob` object from a byte buffer.
     JsSysErrorConstructingBlobFromBytes,
 
+    #[cfg(target_arch = "wasm32")]
     /// An error occurred when attempting to retrieve the function table for the compiled
     /// Pdfium WASM module.
-    #[cfg(target_arch = "wasm32")]
     JsSysErrorRetrievingFunctionTable(JsValue),
 
+    #[cfg(target_arch = "wasm32")]
     /// An error occurred when attempting to retrieve an exported function from
     /// `pdfium-render`'s WASM module.
-    #[cfg(target_arch = "wasm32")]
     JsSysErrorRetrievingFunction(JsValue),
 
-    /// An error occurred when attempting to update an entry in Pdfium's WASM function table.
     #[cfg(target_arch = "wasm32")]
+    /// An error occurred when attempting to update an entry in Pdfium's WASM function table.
     JsSysErrorPatchingFunctionTable(JsValue),
 
+    #[cfg(target_arch = "wasm32")]
     /// No previously cached function was available for a WASM function table restore operation.
     ///
     /// This error should never occur; if it does, it indicates a programming error in pdfium-render.
     /// Please file an issue: https://github.com/ajrcarey/pdfium-render/issues
-    #[cfg(target_arch = "wasm32")]
     NoPreviouslyCachedFunctionSet,
 
     /// An error occurred during an image processing operation.
@@ -202,8 +233,21 @@ pub enum PdfiumError {
     /// `u16` size allowed by `pdfium-render`.
     ImageSizeOutOfBounds,
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// When constructing a [crate::pdf::bitmap::PdfBitmap] from a raw buffer, the buffer
+    /// must be large enough to contain the bitmap's pixels.
+    ///
+    /// The method which returns this error is not available on WASM.
+    ImageBufferTooSmall,
+
     /// An I/O error occurred during a Pdfium file operation.
     IoError(std::io::Error),
+
+    /// An error occurred during conversion of a given user font path to a CString.
+    InvalidUserFontPath(NulError),
+
+    /// Pdfium does not include a default font provider implementation for the current platform.
+    NoPlatformDefaultFontProvider,
 
     /// A wrapped internal library error from Pdfium's `FPDF_ERR_*` constant values.
     PdfiumLibraryInternalError(PdfiumInternalError),
@@ -211,7 +255,7 @@ pub enum PdfiumError {
 
 impl Display for PdfiumError {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "{:#?}", self)
+        write!(f, "{self:#?}")
     }
 }
 

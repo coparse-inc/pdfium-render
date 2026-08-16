@@ -2,29 +2,27 @@
 //! action of type `PdfActionType::Uri`.
 
 use crate::bindgen::{FPDF_ACTION, FPDF_DOCUMENT};
-use crate::bindings::PdfiumLibraryBindings;
 use crate::error::PdfiumError;
 use crate::pdf::action::private::internal::PdfActionPrivate;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use crate::utils::mem::create_byte_buffer;
-use std::ffi::{c_void, CString};
+use std::ffi::CString;
+use std::marker::PhantomData;
+use std::os::raw::c_void;
 
 pub struct PdfActionUri<'a> {
     handle: FPDF_ACTION,
     document: FPDF_DOCUMENT,
-    bindings: &'a dyn PdfiumLibraryBindings,
+    lifetime: PhantomData<&'a FPDF_ACTION>,
 }
 
 impl<'a> PdfActionUri<'a> {
     #[inline]
-    pub(crate) fn from_pdfium(
-        handle: FPDF_ACTION,
-        document: FPDF_DOCUMENT,
-        bindings: &'a dyn PdfiumLibraryBindings,
-    ) -> Self {
+    pub(crate) fn from_pdfium(handle: FPDF_ACTION, document: FPDF_DOCUMENT) -> Self {
         PdfActionUri {
             handle,
             document,
-            bindings,
+            lifetime: PhantomData,
         }
     }
 
@@ -39,12 +37,14 @@ impl<'a> PdfActionUri<'a> {
         // length and call FPDFAction_GetURIPath() again with a pointer to the buffer;
         // this will write the path to the buffer as an array of 7-bit ASCII characters.
 
-        let buffer_length = self.bindings().FPDFAction_GetURIPath(
-            self.document,
-            self.handle,
-            std::ptr::null_mut(),
-            0,
-        );
+        let buffer_length = unsafe {
+            self.bindings().FPDFAction_GetURIPath(
+                self.document,
+                self.handle,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
 
         if buffer_length == 0 {
             // There is no URI path for this action.
@@ -54,12 +54,14 @@ impl<'a> PdfActionUri<'a> {
 
         let mut buffer = create_byte_buffer(buffer_length as usize);
 
-        let result = self.bindings().FPDFAction_GetURIPath(
-            self.document,
-            self.handle,
-            buffer.as_mut_ptr() as *mut c_void,
-            buffer_length,
-        );
+        let result = unsafe {
+            self.bindings().FPDFAction_GetURIPath(
+                self.document,
+                self.handle,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer_length,
+            )
+        };
 
         assert_eq!(result, buffer_length);
 
@@ -78,9 +80,12 @@ impl<'a> PdfActionPrivate<'a> for PdfActionUri<'a> {
     fn handle(&self) -> &FPDF_ACTION {
         &self.handle
     }
-
-    #[inline]
-    fn bindings(&self) -> &dyn PdfiumLibraryBindings {
-        self.bindings
-    }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfActionUri<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfActionUri<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfActionUri<'a> {}

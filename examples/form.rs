@@ -1,4 +1,4 @@
-use image::ImageFormat;
+use image_025::ImageFormat;
 use pdfium_render::prelude::*;
 
 pub fn main() -> Result<(), PdfiumError> {
@@ -56,15 +56,15 @@ pub fn main() -> Result<(), PdfiumError> {
                 "Page {} has defined {:#?} box ({}, {}) - ({}, {})",
                 index,
                 boundary.box_type,
-                boundary.bounds.left.value,
-                boundary.bounds.top.value,
-                boundary.bounds.right.value,
-                boundary.bounds.bottom.value,
+                boundary.bounds.left().value,
+                boundary.bounds.top().value,
+                boundary.bounds.right().value,
+                boundary.bounds.bottom().value,
             );
         }
 
         page.render_with_config(&render_config)?
-            .as_image()
+            .as_image()?
             .as_rgba8()
             .ok_or(PdfiumError::ImageError)?
             .save_with_format(format!("form-page-{}.jpg", index), ImageFormat::Jpeg)

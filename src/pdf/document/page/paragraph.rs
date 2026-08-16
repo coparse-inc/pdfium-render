@@ -4,17 +4,17 @@
 #![allow(unused)] // AJRC - 28/1/23 - Suppress unused function warnings during development of PdfParagraph
 
 use crate::bindgen::FPDF_PAGEOBJECT;
-use crate::document::PdfDocument;
 use crate::error::PdfiumError;
-use crate::font::PdfFont;
-use crate::fonts::PdfFontToken;
-use crate::page::PdfPage;
-use crate::page_object::{PdfPageObject, PdfPageObjectCommon};
-use crate::page_object_group::PdfPageGroupObject;
-use crate::page_object_private::internal::PdfPageObjectPrivate;
-use crate::page_object_text::PdfPageTextObject;
-use crate::page_objects_common::PdfPageObjectsCommon;
-use crate::points::PdfPoints;
+use crate::pdf::document::fonts::PdfFontToken;
+use crate::pdf::document::page::object::group::PdfPageGroupObject;
+use crate::pdf::document::page::object::private::internal::PdfPageObjectPrivate;
+use crate::pdf::document::page::object::text::PdfPageTextObject;
+use crate::pdf::document::page::object::{PdfPageObject, PdfPageObjectCommon};
+use crate::pdf::document::page::objects::common::PdfPageObjectsCommon;
+use crate::pdf::document::page::PdfPage;
+use crate::pdf::document::PdfDocument;
+use crate::pdf::font::PdfFont;
+use crate::pdf::points::PdfPoints;
 use itertools::Itertools;
 use maybe_owned::MaybeOwned;
 use std::cmp::Ordering;
@@ -66,7 +66,7 @@ impl<'a> PdfStyledString<'a> {
 
     /// Returns the [PdfFont] used to style this [PdfStyledString].
     #[inline]
-    pub fn font(&self) -> &PdfFont {
+    pub fn font(&self) -> &PdfFont<'_> {
         self.font.as_ref()
     }
 
@@ -104,8 +104,8 @@ impl<'a> PdfStyledString<'a> {
             other_font.is_all_caps(),
             self.font().is_small_caps(),
             other_font.is_small_caps(),
-            self.font().name(),
-            other_font.name()
+            self.font().family(),
+            other_font.family()
         );
 
         if self.font_size() != other_font_size {
@@ -118,9 +118,9 @@ impl<'a> PdfStyledString<'a> {
             return false;
         }
 
-        let this_font_name = this_font.name();
+        let this_font_name = this_font.family();
 
-        let other_font_name = other_font.name();
+        let other_font_name = other_font.family();
 
         if this_font_name.is_empty() && other_font_name.is_empty() {
             // We can't distinguish based on font names, and the sizes and font handles are identical,
@@ -138,7 +138,7 @@ impl<'a> PdfStyledString<'a> {
     #[inline]
     pub fn as_text_object(
         &self,
-        document: &PdfDocument<'a>,
+        document: &'a PdfDocument<'a>,
     ) -> Result<PdfPageTextObject<'a>, PdfiumError> {
         PdfPageTextObject::new(document, self.text(), self.font(), self.font_size())
     }
@@ -291,7 +291,7 @@ impl<'a> PdfParagraph<'a> {
             .map(|object| {
                 let object_bottom = object
                     .bounds()
-                    .map(|bounds| bounds.bottom)
+                    .map(|bounds| bounds.bottom())
                     .unwrap_or(PdfPoints::ZERO);
 
                 match objects_bottom {
@@ -305,7 +305,7 @@ impl<'a> PdfParagraph<'a> {
 
                 let object_top = object
                     .bounds()
-                    .map(|bounds| bounds.top)
+                    .map(|bounds| bounds.top())
                     .unwrap_or(PdfPoints::ZERO);
 
                 match objects_top {
@@ -324,7 +324,7 @@ impl<'a> PdfParagraph<'a> {
 
                 let object_left = object
                     .bounds()
-                    .map(|bounds| bounds.left)
+                    .map(|bounds| bounds.left())
                     .unwrap_or(PdfPoints::ZERO);
 
                 match objects_left {
@@ -338,7 +338,7 @@ impl<'a> PdfParagraph<'a> {
 
                 let object_right = object
                     .bounds()
-                    .map(|bounds| bounds.right)
+                    .map(|bounds| bounds.right())
                     .unwrap_or(PdfPoints::ZERO);
 
                 match objects_right {
@@ -472,7 +472,7 @@ impl<'a> PdfParagraph<'a> {
 
                         let separator = if let Ok(bounds) = object.bounds() {
                             if let Some(last_object_right) = last_object_right {
-                                if last_object_right > bounds.left {
+                                if last_object_right > bounds.left() {
                                     // The last and current objects are touching.
                                     // Assume they're part of the same word, despite being
                                     // in separate objects.
@@ -507,7 +507,7 @@ impl<'a> PdfParagraph<'a> {
                         println!(
                             "last_object_right = {:?},  this object left = {:?}",
                             last_object_right,
-                            object.bounds().unwrap().left,
+                            object.bounds().unwrap().left(),
                         );
                     } else {
                         // The styles of the two text objects are different, so they can't be merged.
@@ -531,9 +531,8 @@ impl<'a> PdfParagraph<'a> {
                     ));
                 }
             } else {
-                current_line_fragments.push(PdfParagraphFragment::NonTextObject(
-                    object.get_object_handle(),
-                ));
+                current_line_fragments
+                    .push(PdfParagraphFragment::NonTextObject(object.object_handle()));
             }
         }
 
@@ -832,14 +831,14 @@ impl<'a> PdfParagraph<'a> {
 
     /// Assembles the fragments in this paragraph into lines, taking into account the paragraph's
     /// current sizing, overflow, indent, and alignment settings.
-    fn to_lines(&self) -> Vec<PdfLine> {
+    fn to_lines(&self) -> Vec<PdfLine<'_>> {
         todo!()
     }
 
     /// Assembles the fragments in this paragraph into lines, taking into account the paragraph's
     /// current sizing, overflow, indent, and alignment settings, and generates new page objects for
     /// each line, adding all generated page objects to a new [PdfPageGroupObject].
-    pub fn as_group(&self) -> PdfPageGroupObject {
+    pub fn as_group(&self) -> PdfPageGroupObject<'_> {
         todo!()
     }
 
@@ -862,7 +861,7 @@ impl<'a> PdfParagraph<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::paragraph::PdfParagraph;
+    use crate::pdf::document::page::paragraph::PdfParagraph;
     use crate::prelude::*;
     use crate::utils::test::test_bind_to_pdfium; // Temporary until PdfParagraph is included in the prelude.
 

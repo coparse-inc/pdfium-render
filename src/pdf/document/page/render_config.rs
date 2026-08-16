@@ -9,7 +9,7 @@ use crate::bindgen::{
 };
 use crate::create_transform_setters;
 use crate::error::PdfiumError;
-use crate::pdf::bitmap::{PdfBitmapFormat, Pixels};
+use crate::pdf::bitmap::{PdfBitmap, PdfBitmapFormat, Pixels};
 use crate::pdf::color::PdfColor;
 use crate::pdf::document::page::field::PdfFormFieldType;
 use crate::pdf::document::page::PdfPageOrientation::{Landscape, Portrait};
@@ -18,49 +18,11 @@ use crate::pdf::matrix::{PdfMatrix, PdfMatrixValue};
 use crate::pdf::points::PdfPoints;
 use std::os::raw::c_int;
 
-#[cfg(doc)]
-use crate::pdf::bitmap::PdfBitmap;
-
-// TODO: AJRC - 29/7/22 - remove deprecated PdfBitmapConfig struct in 0.9.0 as part of tracking issue
-// https://github.com/ajrcarey/pdfium-render/issues/36
-#[deprecated(
-    since = "0.7.12",
-    note = "This struct has been renamed to better reflect its purpose. Use the PdfRenderConfig struct instead."
-)]
-#[doc(hidden)]
-pub struct PdfBitmapConfig {}
-
-#[allow(deprecated)]
-impl PdfBitmapConfig {
-    /// Creates a new [PdfRenderConfig] object with all settings initialized with their default values.
-    #[deprecated(
-        since = "0.7.12",
-        note = "This struct has been renamed to better reflect its purpose. Use the PdfRenderConfig::new() function instead."
-    )]
-    #[inline]
-    #[doc(hidden)]
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new() -> PdfRenderConfig {
-        PdfRenderConfig::new()
-    }
-
-    #[deprecated(
-        since = "0.7.12",
-        note = "This struct has been renamed to better reflect its purpose. Use the PdfRenderConfig::default() function instead."
-    )]
-    #[inline]
-    #[doc(hidden)]
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> PdfRenderConfig {
-        PdfRenderConfig::default()
-    }
-}
-
 /// Configures the scaling, rotation, and rendering settings that should be applied to
 /// a [PdfPage] to create a [PdfBitmap] for that page. [PdfRenderConfig] can accommodate pages of
 /// different sizes while correctly maintaining each page's aspect ratio, automatically
-/// rotate portrait or landscape pages, generate page thumbnails, apply maximum and
-/// minimum pixel sizes to the scaled width and height of the final bitmap, highlight form fields
+/// rotate portrait or landscape pages, generate page thumbnails, apply maximum pixel size
+/// constraints to the scaled width and height of the final rendering, highlight form fields
 /// with different colors, apply custom transforms to the page during rendering, and set
 /// internal Pdfium rendering flags.
 ///
@@ -70,6 +32,11 @@ impl PdfBitmapConfig {
 /// applying transformations, consider using the [PdfPage::flatten()] function to flatten the
 /// form elements and form data into the containing page.
 pub struct PdfRenderConfig {
+    use_auto_scaling: bool,
+    start_x: Pixels,
+    start_y: Pixels,
+    fixed_width: Option<Pixels>,
+    fixed_height: Option<Pixels>,
     target_width: Option<Pixels>,
     target_height: Option<Pixels>,
     scale_width_factor: Option<f32>,
@@ -105,9 +72,14 @@ pub struct PdfRenderConfig {
 }
 
 impl PdfRenderConfig {
-    /// Creates a new [PdfRenderConfig] object with all settings initialized with their default values.
+    /// Creates a new [PdfRenderConfig] object with all settings initialized to their default values.
     pub fn new() -> Self {
         PdfRenderConfig {
+            use_auto_scaling: true,
+            start_x: 0,
+            start_y: 0,
+            fixed_width: None,
+            fixed_height: None,
             target_width: None,
             target_height: None,
             scale_width_factor: None,
@@ -168,9 +140,49 @@ impl PdfRenderConfig {
             .render_form_data(false)
     }
 
+    /// Sets the desired pixel width and height of a rendered [PdfPage] to the
+    /// width and height of the given [PdfBitmap]. No attempt will be made to scale or adjust
+    /// the aspect ratio to match the source page. Overrides any previous call to
+    /// [PdfRenderConfig::set_target_size], [PdfRenderConfig::set_target_width], or
+    /// [PdfRenderConfig::set_target_height].
+    #[inline]
+    pub fn set_fixed_size_to_bitmap(self, bitmap: &PdfBitmap) -> Self {
+        self.set_fixed_size(bitmap.width(), bitmap.height())
+    }
+
+    /// Sets the desired pixel width and height of a rendered [PdfPage] to the given
+    /// pixel values. No attempt will be made to scale or adjust the aspect ratio to
+    /// match the source page. Overrides any previous call to [PdfRenderConfig::set_target_size],
+    /// [PdfRenderConfig::set_target_width], or [PdfRenderConfig::set_target_height].
+    #[inline]
+    pub fn set_fixed_size(self, width: Pixels, height: Pixels) -> Self {
+        self.set_fixed_width(width).set_fixed_height(height)
+    }
+
+    /// Sets the desired pixel width of a rendered [PdfPage] to the given value. Overrides
+    /// any previous call to [PdfRenderConfig::set_target_size] or [PdfRenderConfig::set_target_width].
+    #[inline]
+    pub fn set_fixed_width(mut self, width: Pixels) -> Self {
+        self.use_auto_scaling = false;
+        self.fixed_width = Some(width);
+
+        self
+    }
+
+    /// Sets the desired pixel height of a rendered [PdfPage] to the given value. Overrides
+    /// any previous call to [PdfRenderConfig::set_target_size] or [PdfRenderConfig::set_target_height].
+    #[inline]
+    pub fn set_fixed_height(mut self, height: Pixels) -> Self {
+        self.use_auto_scaling = false;
+        self.fixed_height = Some(height);
+
+        self
+    }
+
     /// Converts the width and height of a [PdfPage] from points to pixels, scaling each
     /// dimension to the given target pixel sizes. The aspect ratio of the source page
-    /// will not be maintained.
+    /// will not be maintained. Overrides any previous call to [PdfRenderConfig::set_fixed_width()]
+    /// or [PdfRenderConfig::set_fixed_height()].
     #[inline]
     pub fn set_target_size(self, width: Pixels, height: Pixels) -> Self {
         self.set_target_width(width).set_target_height(height)
@@ -179,9 +191,11 @@ impl PdfRenderConfig {
     /// Converts the width of a [PdfPage] from points to pixels, scaling the source page
     /// width to the given target pixel width. The aspect ratio of the source page
     /// will be maintained so long as there is no call to [PdfRenderConfig::set_target_size()]
-    /// or [PdfRenderConfig::set_target_height()] that overrides it.
+    /// or [PdfRenderConfig::set_target_height()] that overrides it. Overrides any previous
+    /// call to [PdfRenderConfig::set_fixed_width()] or [PdfRenderConfig::set_fixed_height()].
     #[inline]
     pub fn set_target_width(mut self, width: Pixels) -> Self {
+        self.use_auto_scaling = true;
         self.target_width = Some(width);
 
         self
@@ -190,12 +204,25 @@ impl PdfRenderConfig {
     /// Converts the height of a [PdfPage] from points to pixels, scaling the source page
     /// height to the given target pixel height. The aspect ratio of the source page
     /// will be maintained so long as there is no call to [PdfRenderConfig::set_target_size()]
-    /// or [PdfRenderConfig::set_target_width()] that overrides it.
+    /// or [PdfRenderConfig::set_target_width()] that overrides it. Overrides any previous
+    /// call to [PdfRenderConfig::set_fixed_width()] or [PdfRenderConfig::set_fixed_height()].
     #[inline]
     pub fn set_target_height(mut self, height: Pixels) -> Self {
+        self.use_auto_scaling = true;
         self.target_height = Some(height);
 
         self
+    }
+
+    /// Applies settings to this [PdfRenderConfig] suitable for filling the given [PdfBitmap].
+    ///
+    /// The source page's dimensions will be scaled so that both width and height attempt
+    /// to fill, but do not exceed, the pixel dimensions of the bitmap. The aspect ratio
+    /// of the source page will be maintained. Landscape pages will be automatically rotated
+    /// by 90 degrees and will be scaled down if necessary to fit the bitmap width.
+    #[inline]
+    pub fn scale_page_to_bitmap(self, bitmap: &PdfBitmap) -> Self {
+        self.scale_page_to_display_size(bitmap.width(), bitmap.height())
     }
 
     /// Applies settings to this [PdfRenderConfig] suitable for filling the given
@@ -277,29 +304,6 @@ impl PdfRenderConfig {
     pub fn rotate(self, rotation: PdfPageRenderRotation, do_rotate_constraints: bool) -> Self {
         self.rotate_if_portrait(rotation, do_rotate_constraints)
             .rotate_if_landscape(rotation, do_rotate_constraints)
-    }
-
-    // TODO: AJRC - 30/7/22 - remove deprecated rotate_if_portait() function in 0.9.0 as part
-    // of tracking issue https://github.com/ajrcarey/pdfium-render/issues/36
-    /// Applies the given clockwise rotation settings to the [PdfPage] during rendering, if the page
-    /// is in portrait orientation. If the given flag is set to `true` and the given
-    /// rotation setting is [PdfBitmapRotation::Degrees90] or [PdfBitmapRotation::Degrees270]
-    /// then any maximum constraint on the final pixel width set by a call to [PdfRenderConfig::set_maximum_width()]
-    /// will be rotated so it becomes a constraint on the final pixel height and any
-    /// maximum constraint on the final pixel height set by a call to [PdfRenderConfig::set_maximum_height()]
-    /// will be rotated so it becomes a constraint on the final pixel width.
-    #[deprecated(
-        since = "0.7.12",
-        note = "This function has been renamed to correct a typo. Use the PdfRenderConfig::rotate_if_portrait() function instead."
-    )]
-    #[doc(hidden)]
-    #[inline]
-    pub fn rotate_if_portait(
-        self,
-        rotation: PdfPageRenderRotation,
-        do_rotate_constraints: bool,
-    ) -> Self {
-        self.rotate_if_portrait(rotation, do_rotate_constraints)
     }
 
     /// Applies the given clockwise rotation settings to the [PdfPage] during rendering, if the page
@@ -598,10 +602,13 @@ impl PdfRenderConfig {
         "the [PdfPage] during rendering.",
         "the [PdfPage] during rendering,",
         "Pdfium's rendering pipeline supports _either_ rendering with form data _or_ rendering with
-            a custom transformation matrix, but not both at the same time. Applying any transformation
-            automatically disables rendering of form data. If you must render form data while simultaneously
-            applying transformations, consider using the [PdfPage::flatten()] function to flatten the
-            form elements and form data into the containing page."
+        a custom transformation matrix, but not both at the same time. Applying a transformation via
+        these setters automatically disables rendering of form data. If you must render form data while
+        simultaneously applying transformations, consider using the [PdfPage::flatten()] function to
+        flatten the form elements and form data into the containing page. Note that matrix-based
+        transformations will be applied _in addition to_ any intrinsic page rotation previously set
+        using the [PdfRenderConfig::rotate()], [PdfRenderConfig::rotate_if_portrait()], or
+        [PdfRenderConfig::rotate_if_landscape()] functions."
     );
 
     // The internal implementation of the transform() function used by the create_transform_setters!() macro.
@@ -652,10 +659,36 @@ impl PdfRenderConfig {
         self
     }
 
+    /// Sets the position of the page's top-left corner within the destination [PdfBitmap],
+    /// in bitmap pixel coordinates.
+    ///
+    /// The default is `(0, 0)`, which renders the page's top-left corner at the bitmap's
+    /// top-left corner. Negative offsets push the page off the bitmap's top-left edge;
+    /// positive offsets push it down and right. The rendered page is clipped to the
+    /// destination bitmap's own width and height, so a strip-sized destination bitmap
+    /// combined with a negative `y` offset can be used to render a horizontal strip from
+    /// a large page without having to render the page in its entirety.
+    ///
+    /// To render rows `[y_offset, y_offset + strip_height)` of a page into a strip-sized
+    /// destination bitmap, call `set_origin(0, -y_offset)` and pass a destination bitmap
+    /// with a height of `strip_height`.
+    ///
+    /// Pdfium's rendering pipeline _either_ rendering with form data _or_ rendering with
+    /// a custom transformation matrix, but not both at the same time. Since `set_origin()`
+    /// affects rendering with form data, it is disabled automatically on applying any
+    /// transformation.
+    #[inline]
+    pub fn set_origin(mut self, left: Pixels, top: Pixels) -> Self {
+        self.start_x = left;
+        self.start_y = top;
+
+        self
+    }
+
     /// Computes the pixel dimensions and rotation settings for the given [PdfPage]
     /// based on the configuration of this [PdfRenderConfig].
     #[inline]
-    pub(crate) fn apply_to_page(&self, page: &PdfPage) -> PdfRenderSettings {
+    pub(crate) fn apply_to_page(&self, page: &PdfPage) -> PdfPageRenderSettings {
         let source_width = page.width();
 
         let source_height = page.height();
@@ -683,82 +716,102 @@ impl PdfRenderConfig {
             (PdfPageRenderRotation::None, false)
         };
 
-        let width_scale = if let Some(scale) = self.scale_width_factor {
-            Some(scale)
-        } else {
-            self.target_width
-                .map(|target| (target as f32) / source_width.value)
-        };
+        let (output_width, output_height, width_scale, height_scale) = if self.use_auto_scaling {
+            // Compute output width and height based on target sizes and page dimensions.
 
-        let height_scale = if let Some(scale) = self.scale_height_factor {
-            Some(scale)
-        } else {
-            self.target_height
-                .map(|target| (target as f32) / source_height.value)
-        };
-
-        // Maintain source aspect ratio if only one dimension's scale is set.
-
-        let (do_maintain_aspect_ratio, mut width_scale, mut height_scale) =
-            match (width_scale, height_scale) {
-                (Some(width_scale), Some(height_scale)) => {
-                    (width_scale == height_scale, width_scale, height_scale)
-                }
-                (Some(width_scale), None) => (true, width_scale, width_scale),
-                (None, Some(height_scale)) => (true, height_scale, height_scale),
-                (None, None) => {
-                    // Set default scale to 1.0 if neither dimension is specified.
-
-                    (false, 1.0, 1.0)
-                }
-            };
-
-        // Apply constraints on maximum width and height, if any.
-
-        let (source_width, source_height, width_constraint, height_constraint) =
-            if do_rotate_constraints {
-                (
-                    source_height,
-                    source_width,
-                    self.maximum_height,
-                    self.maximum_width,
-                )
+            let width_scale = if let Some(scale) = self.scale_width_factor {
+                Some(scale)
             } else {
-                (
-                    source_width,
-                    source_height,
-                    self.maximum_width,
-                    self.maximum_height,
-                )
+                self.target_width
+                    .map(|target| (target as f32) / source_width.value)
             };
 
-        if let Some(maximum) = width_constraint {
-            let maximum = maximum as f32;
+            let height_scale = if let Some(scale) = self.scale_height_factor {
+                Some(scale)
+            } else {
+                self.target_height
+                    .map(|target| (target as f32) / source_height.value)
+            };
 
-            if source_width.value * width_scale > maximum {
-                // Constrain the width, so it does not exceed the maximum.
+            // Maintain source aspect ratio if only one dimension's scale is set.
 
-                width_scale = maximum / source_width.value;
+            let (do_maintain_aspect_ratio, mut width_scale, mut height_scale) =
+                match (width_scale, height_scale) {
+                    (Some(width_scale), Some(height_scale)) => {
+                        (width_scale == height_scale, width_scale, height_scale)
+                    }
+                    (Some(width_scale), None) => (true, width_scale, width_scale),
+                    (None, Some(height_scale)) => (true, height_scale, height_scale),
+                    (None, None) => {
+                        // Set default scale to 1.0 if neither dimension is specified.
 
-                if do_maintain_aspect_ratio {
-                    height_scale = width_scale;
+                        (false, 1.0, 1.0)
+                    }
+                };
+
+            // Apply constraints on maximum width and height, if any.
+
+            let (source_width, source_height, width_constraint, height_constraint) =
+                if do_rotate_constraints {
+                    (
+                        source_height,
+                        source_width,
+                        self.maximum_height,
+                        self.maximum_width,
+                    )
+                } else {
+                    (
+                        source_width,
+                        source_height,
+                        self.maximum_width,
+                        self.maximum_height,
+                    )
+                };
+
+            if let Some(maximum) = width_constraint {
+                let maximum = maximum as f32;
+
+                if source_width.value * width_scale > maximum {
+                    // Constrain the width, so it does not exceed the maximum.
+
+                    width_scale = maximum / source_width.value;
+
+                    if do_maintain_aspect_ratio {
+                        height_scale = width_scale;
+                    }
                 }
             }
-        }
 
-        if let Some(maximum) = height_constraint {
-            let maximum = maximum as f32;
+            if let Some(maximum) = height_constraint {
+                let maximum = maximum as f32;
 
-            if source_height.value * height_scale > maximum {
-                // Constrain the height, so it does not exceed the maximum.
+                if source_height.value * height_scale > maximum {
+                    // Constrain the height, so it does not exceed the maximum.
 
-                height_scale = maximum / source_height.value;
+                    height_scale = maximum / source_height.value;
 
-                if do_maintain_aspect_ratio {
-                    width_scale = height_scale;
+                    if do_maintain_aspect_ratio {
+                        width_scale = height_scale;
+                    }
                 }
             }
-        }
+
+            (
+                (source_width.value * width_scale).round() as c_int,
+                (source_height.value * height_scale).round() as c_int,
+                width_scale,
+                height_scale,
+            )
+        } else {
+            // Take output width and height directly from user's fixed settings.
+
+            (
+                self.fixed_width.unwrap_or(0) as c_int,
+                self.fixed_height.unwrap_or(0) as c_int,
+                self.scale_width_factor.unwrap_or(1.0),
+                self.scale_height_factor.unwrap_or(1.0),
+            )
+        };
 
         // Compose render flags.
 
@@ -812,10 +865,6 @@ impl PdfRenderConfig {
             render_flags |= FPDF_CONVERT_FILL_TO_STROKE;
         }
 
-        let output_width = (source_width.value * width_scale).round() as c_int;
-
-        let output_height = (source_height.value * height_scale).round() as c_int;
-
         // Pages can be rendered either _with_ transformation matrices and clipping
         // but _without_ form data, or _with_ form data but _without_ transformation matrices
         // and clipping. We need to be prepared for either option. If rendering of form data
@@ -844,10 +893,12 @@ impl PdfRenderConfig {
 
             result.and_then(|result| result.scale(width_scale, height_scale))
         } else {
-            Ok(self.transformation_matrix)
+            Ok(PdfMatrix::identity())
         };
 
-        PdfRenderSettings {
+        PdfPageRenderSettings {
+            start_x: self.start_x as c_int,
+            start_y: self.start_y as c_int,
             width: output_width,
             height: output_height,
             format: self.format.as_pdfium() as c_int,
@@ -908,7 +959,9 @@ impl Default for PdfRenderConfig {
 /// Finalized rendering settings, ready to be passed to a Pdfium rendering function.
 /// Generated by calling [PdfRenderConfig::apply_to_page()].
 #[derive(Debug, Clone)]
-pub(crate) struct PdfRenderSettings {
+pub(crate) struct PdfPageRenderSettings {
+    pub(crate) start_x: c_int,
+    pub(crate) start_y: c_int,
     pub(crate) width: c_int,
     pub(crate) height: c_int,
     pub(crate) format: c_int,
@@ -921,4 +974,382 @@ pub(crate) struct PdfRenderSettings {
     pub(crate) clipping: FS_RECTF,
     pub(crate) render_flags: c_int,
     pub(crate) is_reversed_byte_order_flag_set: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::prelude::*;
+    use crate::utils::test::test_bind_to_pdfium; // Temporary until PdfParagraph is included in the prelude.
+
+    #[test]
+    fn test_set_origin_default_settings_zero() -> Result<(), PdfiumError> {
+        let render_settings = get_render_settings_from_config(PdfRenderConfig::new())?;
+
+        assert_eq!(render_settings.start_x, 0);
+        assert_eq!(render_settings.start_y, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_origin_negative_offsets_pass_through() -> Result<(), PdfiumError> {
+        let render_settings =
+            get_render_settings_from_config(PdfRenderConfig::new().set_origin(-50, -400))?;
+
+        assert_eq!(render_settings.start_x, -50);
+        assert_eq!(render_settings.start_y, -400);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_origin_positive_offsets_pass_through() -> Result<(), PdfiumError> {
+        let render_settings =
+            get_render_settings_from_config(PdfRenderConfig::new().set_origin(75, 125))?;
+
+        assert_eq!(render_settings.start_x, 75);
+        assert_eq!(render_settings.start_y, 125);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_origin_strips_stitch_to_full_page() -> Result<(), PdfiumError> {
+        // Compare a full page render of a sample page against a render assembled
+        // from multiple stripped renders. The results should be identical.
+
+        let pdfium = test_bind_to_pdfium();
+
+        let document = pdfium.load_pdf_from_file("./test/image-test.pdf", None)?;
+        let page = document.pages().first()?;
+
+        // `image-test.pdf` is single-page A4: 595 × 842 points at 72 DPI outputs to
+        // 595 × 842 pixels when rendered with `set_target_size(595, 842)`.
+
+        let target_width: Pixels = 1000;
+        let target_height: Pixels = 800;
+        let strips: i32 = 4; // The number of render passes, with each pass outputting a single strip
+        let strip_height: Pixels = target_height / strips as Pixels;
+
+        assert_eq!(strip_height * strips, target_height);
+
+        // First, create a full page render of the target page.
+
+        let full_bitmap = page.render_with_config(
+            &PdfRenderConfig::new().set_fixed_size(target_width, target_height),
+        )?;
+        let full_bytes = full_bitmap.as_image()?.to_rgba8().into_raw();
+        let row_bytes = (target_width as usize) * 4;
+
+        assert_eq!(full_bytes.len(), row_bytes * (target_height as usize));
+
+        // Next, render the page in strips...
+
+        let mut stitched: Vec<u8> = Vec::with_capacity(full_bytes.len());
+
+        for i in 0..strips {
+            let mut strip_bitmap =
+                PdfBitmap::empty(target_width, strip_height, full_bitmap.format()?)?;
+
+            page.render_into_bitmap_with_config(
+                &mut strip_bitmap,
+                &&PdfRenderConfig::new()
+                    .set_fixed_size(target_width, target_height)
+                    .set_origin(0, -(i * strip_height)),
+            )?;
+
+            // ... joining each strip in memory to build a complete rendered image.
+
+            stitched.extend_from_slice(strip_bitmap.as_image()?.to_rgba8().as_raw());
+        }
+
+        // The render output assembled from the strips should exactly match the full page render.
+
+        println!(
+            "{}, {}, {}, {}",
+            strip_height,
+            strip_height * strips,
+            target_height,
+            row_bytes
+        );
+        assert_eq!(stitched.len(), full_bytes.len());
+
+        let mut sums = [0u64; 4]; // Track per-channel mean drift between stitched and full-page renders.
+        let pixel_count = full_bytes.len() / 4;
+
+        for px in 0..pixel_count {
+            for ch in 0..4 {
+                let a = stitched[px * 4 + ch] as i32;
+                let b = full_bytes[px * 4 + ch] as i32;
+                sums[ch] += (a - b).unsigned_abs() as u64;
+            }
+        }
+
+        let n = pixel_count as f64;
+        let max_drift = (0..4).map(|ch| sums[ch] as f64 / n).fold(0.0_f64, f64::max);
+
+        assert!(
+            max_drift < 5.0,
+            "stitched-vs-full per-channel mean drift {:.3}/255 exceeds tolerance",
+            max_drift
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_fixed_size_render_config() -> Result<(), PdfiumError> {
+        let render_settings =
+            get_render_settings_from_config(PdfRenderConfig::new().set_fixed_size(2000, 2000))?;
+
+        assert_eq!(render_settings.width, 2000);
+        assert_eq!(render_settings.height, 2000);
+
+        // Applying scaling does not affect the rendered bitmap size.
+
+        let render_settings = get_render_settings_from_config(
+            PdfRenderConfig::new()
+                .set_fixed_size(2000, 2000)
+                .scale_page_by_factor(5.0),
+        )?;
+
+        assert_eq!(render_settings.width, 2000);
+        assert_eq!(render_settings.height, 2000);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_target_size_render_config() -> Result<(), PdfiumError> {
+        let render_settings = get_render_settings_from_config(
+            PdfRenderConfig::new().scale_page_to_display_size(2000, 2000),
+        )?;
+
+        assert_eq!(render_settings.width, 1414);
+        assert_eq!(render_settings.height, 2000);
+
+        // Applying scaling does affected the rendered bitmap size.
+
+        let render_settings = get_render_settings_from_config(
+            PdfRenderConfig::new()
+                .set_target_size(2000, 2000)
+                .scale_page_by_factor(5.0),
+        )?;
+
+        assert_eq!(render_settings.width, 2976);
+        assert_eq!(render_settings.height, 4209);
+
+        Ok(())
+    }
+
+    fn get_render_settings_from_config(
+        config: PdfRenderConfig,
+    ) -> Result<PdfPageRenderSettings, PdfiumError> {
+        let pdfium = test_bind_to_pdfium();
+
+        let mut document = pdfium.create_new_pdf()?;
+        let page = document
+            .pages_mut()
+            .create_page_at_start(PdfPagePaperSize::Portrait(PdfPagePaperStandardSize::A4))?;
+
+        Ok(config.apply_to_page(&page))
+    }
+
+    /// Per-pixel mean absolute difference across all RGBA channels. Returns
+    /// infinity on a length mismatch so a dimension difference fails an
+    /// equality check and passes a divergence check.
+    fn mean_abs_diff(a: &[u8], b: &[u8]) -> f64 {
+        if a.len() != b.len() {
+            return f64::INFINITY;
+        }
+
+        let sum: u64 = a
+            .iter()
+            .zip(b)
+            .map(|(x, y)| (*x as i64 - *y as i64).unsigned_abs())
+            .sum();
+
+        sum as f64 / a.len() as f64
+    }
+
+    /// Builds a single-page A4 document with two asymmetric filled rectangles,
+    /// so that orientation is observable. A blank page would compare equal under
+    /// any rotation, which is why content is required.
+    fn create_asymmetric_a4(pdfium: &Pdfium) -> Result<PdfDocument<'_>, PdfiumError> {
+        let mut document = pdfium.create_new_pdf()?;
+
+        {
+            let mut page = document
+                .pages_mut()
+                .create_page_at_start(PdfPagePaperSize::Portrait(PdfPagePaperStandardSize::A4))?;
+
+            page.objects_mut().create_path_object_rect(
+                PdfRect::new(
+                    PdfPoints::new(640.0),
+                    PdfPoints::new(60.0),
+                    PdfPoints::new(800.0),
+                    PdfPoints::new(300.0),
+                ),
+                None,
+                None,
+                Some(PdfColor::RED),
+            )?;
+
+            page.objects_mut().create_path_object_rect(
+                PdfRect::new(
+                    PdfPoints::new(40.0),
+                    PdfPoints::new(400.0),
+                    PdfPoints::new(120.0),
+                    PdfPoints::new(560.0),
+                ),
+                None,
+                None,
+                Some(PdfColor::new(0, 0, 255, 255)),
+            )?;
+        }
+
+        Ok(document)
+    }
+
+    /// `FPDF_RenderPageBitmapWithMatrix` composes the caller matrix on top of
+    /// pdfium's display transform, which already applies the page's intrinsic
+    /// `/Rotate`. So the matrix render path with an identity matrix must produce
+    /// byte-identical output to the form-data path, which also applies `/Rotate`,
+    /// for every `/Rotate` value. A caller that mistakenly believed the matrix
+    /// path ignores `/Rotate` and pre-composed a rotation would fail this test.
+    #[test]
+    fn test_matrix_path_matches_form_path_for_each_intrinsic_rotation() -> Result<(), PdfiumError> {
+        let pdfium = test_bind_to_pdfium();
+        let mut document = create_asymmetric_a4(&pdfium)?;
+        let mut page = document.pages_mut().first()?;
+
+        for rotation in [
+            PdfPageRenderRotation::None,
+            PdfPageRenderRotation::Degrees90,
+            PdfPageRenderRotation::Degrees180,
+            PdfPageRenderRotation::Degrees270,
+        ] {
+            page.set_rotation(rotation);
+
+            let width = page.width().value.round() as Pixels;
+            let height = page.height().value.round() as Pixels;
+
+            // Form-data path: applies `/Rotate` automatically.
+            let form = page
+                .render_with_config(&PdfRenderConfig::new().set_target_size(width, height))?
+                .as_image()?
+                .to_rgba8()
+                .into_raw();
+
+            // Matrix path with an identity matrix.
+            let matrix = page
+                .render_with_config(
+                    &PdfRenderConfig::new()
+                        .set_target_size(width, height)
+                        .render_form_data(false),
+                )?
+                .as_image()?
+                .to_rgba8()
+                .into_raw();
+
+            let drift = mean_abs_diff(&matrix, &form);
+            assert!(
+                drift < 1.0,
+                "{rotation:?}: matrix path diverged from the form-data path ({drift:.3}/255), \
+                 so the matrix path is not applying /Rotate the way this test assumes",
+            );
+
+            // Negative control: a half-scale matrix-path render must differ, so a
+            // zero drift above can only mean genuine agreement, not two blanks.
+            let control = page
+                .render_with_config(
+                    &PdfRenderConfig::new()
+                        .set_fixed_size(width, height)
+                        .render_form_data(false)
+                        .scale_page_by_factor(0.5),
+                )?
+                .as_image()?
+                .to_rgba8()
+                .into_raw();
+
+            assert!(
+                mean_abs_diff(&control, &form) > 5.0,
+                "{rotation:?}: negative control did not diverge, the comparison is not discriminating",
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Renders a `/Rotate 90` page as horizontal strips through the matrix path,
+    /// using the device-space strip matrix `[s, 0, 0, s, 0, -y_offset]`, and
+    /// stitches them. The result must match the full form-data render. If a
+    /// caller baked a rotation into the strip matrix, the strips would not stitch
+    /// to the correctly-rotated full render. `reset_matrix()` does not disable
+    /// form data on its own, so `render_form_data(false)` is required.
+    #[test]
+    fn test_matrix_path_strip_stitch_matches_full_render() -> Result<(), PdfiumError> {
+        let pdfium = test_bind_to_pdfium();
+        let mut document = create_asymmetric_a4(&pdfium)?;
+        let mut page = document.pages_mut().first()?;
+        page.set_rotation(PdfPageRenderRotation::Degrees90);
+
+        let width = page.width().value.round() as Pixels;
+        let height = page.height().value.round() as Pixels;
+
+        let full = page
+            .render_with_config(&PdfRenderConfig::new().set_target_size(width, height))?
+            .as_image()?
+            .to_rgba8()
+            .into_raw();
+
+        let strips: Pixels = 5;
+        let mut stitched: Vec<u8> = Vec::with_capacity(full.len());
+        let mut y_offset: Pixels = 0;
+
+        for i in 0..strips {
+            // The last strip absorbs any remainder so the strips cover the page.
+            let strip_height = if i == strips - 1 {
+                height - y_offset
+            } else {
+                height / strips
+            };
+
+            let strip = page
+                .render_with_config(
+                    &PdfRenderConfig::new()
+                        .set_fixed_size(width, strip_height)
+                        .clip(0, 0, width, strip_height)
+                        .render_form_data(false)
+                        .reset_matrix(PdfMatrix::new(
+                            1.0,
+                            0.0,
+                            0.0,
+                            1.0,
+                            0.0,
+                            -(y_offset as f32),
+                        ))?,
+                )?
+                .as_image()?
+                .to_rgba8()
+                .into_raw();
+
+            stitched.extend_from_slice(&strip);
+            y_offset += strip_height;
+        }
+
+        assert_eq!(
+            stitched.len(),
+            full.len(),
+            "stitched strips must cover the full page",
+        );
+
+        let drift = mean_abs_diff(&stitched, &full);
+        assert!(
+            drift < 1.0,
+            "matrix-path strips did not stitch to the full render ({drift:.3}/255)",
+        );
+
+        Ok(())
+    }
 }

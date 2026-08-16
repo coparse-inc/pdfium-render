@@ -2,11 +2,12 @@
 //! `PdfDocument`.
 
 use crate::bindgen::{FPDF_DOCUMENT, FPDF_FONT, FPDF_FONT_TRUETYPE, FPDF_FONT_TYPE1};
-use crate::bindings::PdfiumLibraryBindings;
 use crate::error::{PdfiumError, PdfiumInternalError};
 use crate::pdf::font::PdfFont;
+use crate::pdfium::PdfiumLibraryBindingsAccessor;
 use std::collections::HashMap;
 use std::io::Read;
+use std::marker::PhantomData;
 use std::os::raw::{c_int, c_uint};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -33,6 +34,9 @@ use web_sys::{window, Blob, Response};
 
 #[cfg(doc)]
 struct Blob;
+
+#[cfg(doc)]
+use crate::pdf::document::PdfDocument;
 
 /// The 14 built-in fonts provided as part of the PDF specification.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -125,38 +129,31 @@ impl<'a> ToPdfFontToken for &'a PdfFont<'a> {
     }
 }
 
+/// A collection of all the [PdfFont] objects in a [PdfDocument].
 pub struct PdfFonts<'a> {
     document_handle: FPDF_DOCUMENT,
     fonts: HashMap<PdfFontToken, PdfFont<'a>>,
-    bindings: &'a dyn PdfiumLibraryBindings,
+    lifetime: PhantomData<&'a FPDF_DOCUMENT>,
 }
 
 impl<'a> PdfFonts<'a> {
     #[inline]
-    pub(crate) fn from_pdfium(
-        document_handle: FPDF_DOCUMENT,
-        bindings: &'a dyn PdfiumLibraryBindings,
-    ) -> Self {
+    pub(crate) fn from_pdfium(document_handle: FPDF_DOCUMENT) -> Self {
         PdfFonts {
             document_handle,
             fonts: HashMap::new(),
-            bindings,
+            lifetime: PhantomData,
         }
-    }
-
-    /// Returns the [PdfiumLibraryBindings] used by this [PdfFonts] collection.
-    #[inline]
-    pub fn bindings(&self) -> &'a dyn PdfiumLibraryBindings {
-        self.bindings
     }
 
     /// Returns a reusable [PdfFontToken] for the given built-in font.
     #[inline]
     pub fn new_built_in(&mut self, font: PdfFontBuiltin) -> PdfFontToken {
         let font = PdfFont::from_pdfium(
-            self.bindings
-                .FPDFText_LoadStandardFont(self.document_handle, font.to_pdf_font_name()),
-            self.bindings,
+            unsafe {
+                self.bindings()
+                    .FPDFText_LoadStandardFont(self.document_handle, font.to_pdf_font_name())
+            },
             Some(font),
             true,
         );
@@ -255,23 +252,23 @@ impl<'a> PdfFonts<'a> {
     /// Attempts to load a Type 1 font file from the given file path, returning a reusable
     /// [PdfFontToken] if the font was successfully loaded.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
     ///
     /// This function is not available when compiling to WASM. You have several options for
     /// loading font data in WASM:
-    /// * Use the [PdfFont::load_type1_from_fetch()] function to download font data from a
+    /// * Use the [PdfFonts::load_type1_from_fetch()] function to download font data from a
     ///   URL using the browser's built-in `fetch()` API. This function is only available when
     ///   compiling to WASM.
-    /// * Use the [PdfFont::load_type1_from_blob()] function to load font data from a
+    /// * Use the [PdfFonts::load_type1_from_blob()] function to load font data from a
     ///   Javascript File or Blob object (such as a File object returned from an HTML
     ///   `<input type="file">` element). This function is only available when compiling to WASM.
-    /// * Use the [PdfFont::load_type1_from_reader()] function to load font data from any
+    /// * Use the [PdfFonts::load_type1_from_reader()] function to load font data from any
     ///   valid Rust reader.
     /// * Use another method to retrieve the bytes of the target font over the network,
-    ///   then load those bytes into Pdfium using the [PdfFont::new_type1_from_bytes()] function.
+    ///   then load those bytes into Pdfium using the [PdfFonts::load_type1_from_bytes()] function.
     /// * Embed the bytes of the desired font directly into the compiled WASM module
     ///   using the `include_bytes!()` macro.
     #[cfg(not(target_arch = "wasm32"))]
@@ -286,7 +283,7 @@ impl<'a> PdfFonts<'a> {
     /// Attempts to load a Type 1 font file from the given reader, returning a reusable
     /// [PdfFontToken] if the font was successfully loaded.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -309,7 +306,7 @@ impl<'a> PdfFonts<'a> {
     ///
     /// The Javascript `fetch()` API is used to download data over the network.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -355,7 +352,7 @@ impl<'a> PdfFonts<'a> {
     /// const file = document.getElementById('filePicker').files[0];
     /// ```
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -382,7 +379,7 @@ impl<'a> PdfFonts<'a> {
     /// Attempts to load the given byte data as a Type 1 font file, returning a reusable
     /// [PdfFontToken] if the font was successfully loaded.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -397,23 +394,23 @@ impl<'a> PdfFonts<'a> {
     /// Attempts to load a TrueType font file from the given file path, returning a reusable
     /// [PdfFontToken] if the font was successfully loaded.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
     ///
     /// This function is not available when compiling to WASM. You have several options for
     /// loading font data in WASM:
-    /// * Use the [PdfFont::load_true_type_from_fetch()] function to download font data from a
+    /// * Use the [PdfFonts::load_true_type_from_fetch()] function to download font data from a
     ///   URL using the browser's built-in `fetch()` API. This function is only available when
     ///   compiling to WASM.
-    /// * Use the [PdfFont::load_true_type_from_blob()] function to load font data from a
+    /// * Use the [PdfFonts::load_true_type_from_blob()] function to load font data from a
     ///   Javascript `File` or `Blob` object (such as a `File` object returned from an HTML
     ///   `<input type="file">` element). This function is only available when compiling to WASM.
-    /// * Use the [PdfFont::load_true_type_from_reader()] function to load font data from any
+    /// * Use the [PdfFonts::load_true_type_from_reader()] function to load font data from any
     ///   valid Rust reader.
     /// * Use another method to retrieve the bytes of the target font over the network,
-    ///   then load those bytes into Pdfium using the [PdfFont::new_true_type_from_bytes()] function.
+    ///   then load those bytes into Pdfium using the [PdfFonts::load_true_type_from_bytes()] function.
     /// * Embed the bytes of the desired font directly into the compiled WASM module
     ///   using the `include_bytes!()` macro.
     #[cfg(not(target_arch = "wasm32"))]
@@ -431,7 +428,7 @@ impl<'a> PdfFonts<'a> {
     /// Attempts to load a TrueType font file from the given reader, returning a reusable
     /// [PdfFontToken] if the font was successfully loaded.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -454,7 +451,7 @@ impl<'a> PdfFonts<'a> {
     ///
     /// The Javascript `fetch()` API is used to download data over the network.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -500,7 +497,7 @@ impl<'a> PdfFonts<'a> {
     /// const file = document.getElementById('filePicker').files[0];
     /// ```
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -527,7 +524,7 @@ impl<'a> PdfFonts<'a> {
     /// Attempts to load the given byte data as a TrueType font file, returning a reusable
     /// [PdfFontToken] if the font was successfully loaded.
     ///
-    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by
+    /// Set the `is_cid_font` parameter to `true` if the given font is keyed by a
     /// 16-bit character ID (CID), indicating that it supports an extended glyphset of
     /// 65,535 glyphs. This is typically the case with fonts that support Asian character sets
     /// or right-to-left languages.
@@ -546,20 +543,22 @@ impl<'a> PdfFonts<'a> {
         font_type: c_uint,
         is_cid_font: bool,
     ) -> Result<PdfFontToken, PdfiumError> {
-        let handle = self.bindings.FPDFText_LoadFont(
-            self.document_handle,
-            font_data.as_ptr(),
-            font_data.len() as c_uint,
-            font_type as c_int,
-            self.bindings.bool_to_pdfium(is_cid_font),
-        );
+        let handle = unsafe {
+            self.bindings().FPDFText_LoadFont(
+                self.document_handle,
+                font_data.as_ptr(),
+                font_data.len() as c_uint,
+                font_type as c_int,
+                self.bindings().bool_to_pdfium(is_cid_font),
+            )
+        };
 
         if handle.is_null() {
             Err(PdfiumError::PdfiumLibraryInternalError(
                 PdfiumInternalError::Unknown,
             ))
         } else {
-            let font = PdfFont::from_pdfium(handle, self.bindings, None, true);
+            let font = PdfFont::from_pdfium(handle, None, true);
 
             let token = PdfFontToken::from_font(&font);
 
@@ -571,7 +570,25 @@ impl<'a> PdfFonts<'a> {
 
     /// Returns a reference to the [PdfFont] associated with the given [PdfFontToken], if any.
     #[inline]
-    pub fn get(&self, token: PdfFontToken) -> Option<&PdfFont> {
+    pub fn get(&self, token: PdfFontToken) -> Option<&PdfFont<'_>> {
         self.fonts.get(&token)
     }
+
+    /// Drops every font in this registry, releasing each font's `FPDF_FONT` handle.
+    ///
+    /// This MUST be called before `FPDF_CloseDocument()`: calling `FPDFFont_Close()`
+    /// on a font whose owning document has already been closed reads freed memory
+    /// inside Pdfium, corrupting the heap. See `PdfDocument::drop()`.
+    #[inline]
+    pub(crate) fn clear(&mut self) {
+        self.fonts.clear();
+    }
 }
+
+impl<'a> PdfiumLibraryBindingsAccessor<'a> for PdfFonts<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Send for PdfFonts<'a> {}
+
+#[cfg(feature = "thread_safe")]
+unsafe impl<'a> Sync for PdfFonts<'a> {}

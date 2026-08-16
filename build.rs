@@ -135,10 +135,18 @@ fn build_bindings_for_one_pdfium_release(release: &str) -> Result<(), BuildError
         let bindings = bindgen::Builder::default()
             // The input header we would like to generate bindings for.
             .header(format!("include/{}/rust-import-wrapper.h", release))
+            .clang_arg("-DPDF_USE_SKIA") // Also generate bindings for optional SKIA functions
+            .clang_arg("-D_SKIA_SUPPORT_") // (Alternative name for this setting in Pdfium 5961 and earlier)
+            .clang_arg("-DPDF_ENABLE_XFA") // Also generate bindings for optional XFA functions
+            .clang_arg("-DPDF_ENABLE_V8") // Also generate bindings for optional V8 functions
+            .generate_cstr(true) // Recommended for Rust 1.59 and later
+            .enable_function_attribute_detection()
             .size_t_is_usize(true) // There are esoteric architectures where size_t != usize. See:
             // https://github.com/rust-lang/rust-bindgen/issues/1671
             // Long term, the solution is for Bindgen to switch to converting size_t to
             // std::os::raw::c_size_t instead of usize, but c_size_t is not yet stabilized.
+            .layout_tests(false) // bindgen 0.71.1 outputs FPDF_BSTR size checks
+            // that break WASM builds when this flag is enabled
             .parse_callbacks(Box::new(bindgen::CargoCallbacks::new())) // Tell cargo to invalidate
             // the built crate whenever any of the included header files change.
             .clang_args(
@@ -149,11 +157,14 @@ fn build_bindings_for_one_pdfium_release(release: &str) -> Result<(), BuildError
                 ]
                 .iter(),
             )
-            .generate_comments(true)
-            .generate()?;
+            .generate_comments(true);
 
-        // Write the bindings to src/bindgen.rs.
+        #[cfg(feature = "pdfium_use_win32")]
+        let bindings = bindings.clang_arg("-D_WIN32"); // Also generate bindings for Windows-specific functions
 
+        // Generate the bindings to src/bindgen.rs.
+
+        let bindings = bindings.generate()?;
         let out_path = PathBuf::from("src");
 
         bindings.write_to_file(out_path.join(format!("bindgen/{}.rs", release)))?;
@@ -163,8 +174,27 @@ fn build_bindings_for_one_pdfium_release(release: &str) -> Result<(), BuildError
 }
 
 #[cfg(feature = "static")]
+/// Tries reading a target-specific value from the environment for the given environment variable
+/// by appending a suffix for the current build target to the given environment variable name,
+/// falling back to the non-suffixed variable name if no target-specific variable exists.
+/// For example, when building on a macOs system and passing in the PDFIUM_STATIC_LIB_PATH
+/// environment name, this function will first look for a `PDFIUM_STATIC_LIB_PATH_aarch64_apple_darwin`
+/// variable in the environment before falling back to `PDFIUM_STATIC_LIB_PATH`.
+fn get_target_suffixed_env_var(env_var: &str) -> Option<String> {
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let target_suffixed_env_var = format!("{}_{}", env_var, target.replace('-', "_"));
+
+    println!("cargo:rerun-if-env-changed={}", target_suffixed_env_var);
+    println!("cargo:rerun-if-env-changed={}", env_var);
+
+    std::env::var(&target_suffixed_env_var)
+        .ok()
+        .or_else(|| std::env::var(env_var).ok())
+}
+
+#[cfg(feature = "static")]
 fn statically_link_pdfium() {
-    if let Ok(path) = std::env::var("PDFIUM_STATIC_LIB_PATH") {
+    if let Some(path) = get_target_suffixed_env_var("PDFIUM_STATIC_LIB_PATH") {
         // Instruct cargo to statically link the given library during the build.
 
         println!("cargo:rustc-link-lib=static=pdfium");
@@ -180,6 +210,9 @@ fn statically_link_pdfium() {
 
         #[cfg(feature = "libc++")]
         println!("cargo:rustc-link-lib=dylib=c++");
+
+        #[cfg(feature = "core_graphics")]
+        println!("cargo:rustc-link-lib=framework=CoreGraphics");
     } else if let Ok(path) = std::env::var("PDFIUM_DYNAMIC_LIB_PATH") {
         // Instruct cargo to dynamically link the given library during the build.
 
